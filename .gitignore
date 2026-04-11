@@ -1,0 +1,52 @@
+# ── Configuración privada ────────────────────────────────────────────────────
+.env
+data/agent_configs.json
+modelos.conf
+.last_model
+
+# ── Datos de usuario ─────────────────────────────────────────────────────────
+data/chroma/
+data/chat_history/
+data/uploads/
+data/documents/
+data/agenda/
+data/users.json
+data/indexes/
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# ── Entornos virtuales ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.conda/
+
+# ── Modelos ──────────────────────────────────────────────────────────────────
+models/
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.pth
+.cache/
+
+# ── IDE ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+

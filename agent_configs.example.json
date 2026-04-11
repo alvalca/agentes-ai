@@ -1,0 +1,32 @@
+{
+  "username_example": {
+    "mode": "manual_select",
+    "agents": [
+      "general",
+      "programador"
+    ],
+    "default_agent": "general",
+    "history_days": 1,
+    "history_max_msg": 10
+  },
+  "teacher_example": {
+    "mode": "auto_router",
+    "agents": [
+      "pedagogico",
+      "psicologo",
+      "general"
+    ],
+    "default_agent": "auto",
+    "history_days": 3,
+    "history_max_msg": 15
+  },
+  "__default__": {
+    "mode": "manual_select",
+    "agents": [
+      "general"
+    ],
+    "default_agent": "general",
+    "history_days": 1,
+    "history_max_msg": 5
+  }
+}

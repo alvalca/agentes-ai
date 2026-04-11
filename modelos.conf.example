@@ -1,0 +1,30 @@
+# ============================================================================
+# modelos.conf — Lista de modelos disponibles para el menú de inicio
+# ============================================================================
+# INSTRUCCIONES:
+# 1. Copia este archivo como "modelos.conf" en la raíz del proyecto
+# 2. Edita los identificadores según tus modelos descargados en LM Studio
+# 3. El archivo modelos.conf está en .gitignore (no se sube a GitHub)
+#
+# FORMATO: lms_identifier | Etiqueta del menú
+#
+# CÓMO OBTENER EL IDENTIFICADOR CORRECTO:
+#   1. Descarga el modelo en LM Studio
+#   2. Ejecuta: lms ls
+#   3. Copia exactamente el nombre de la columna izquierda
+#   4. Si el modelo tiene varias variantes añade @q4_k_m o @q5_k_m
+#      para especificar la cuantización exacta
+#
+# NOTA: Si no creas este archivo el script arranca en "modo simple"
+#       y LM Studio usará el último modelo cargado automáticamente.
+# ============================================================================
+
+# Modelo con una sola variante — usar nombre completo con prefijo
+# mradermacher/qwen3.5-35b-a3b-heretic-v2-i1 | 35B Heretic MoE · Q4_K_M
+
+# Modelo con varias variantes — usar @cuantizacion para ser específico
+# nombre-modelo@q4_k_m | Mi Modelo · Q4_K_M
+# nombre-modelo@q5_k_m | Mi Modelo · Q5_K_M
+
+# Modelo con variante predeterminada en LM Studio
+# mradermacher/nombre-modelo | Mi Modelo · predeterminado
