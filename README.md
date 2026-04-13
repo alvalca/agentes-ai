@@ -631,7 +631,6 @@ Transcripts without punctuation or paragraph structure still benefit from adapti
 
 ## Roadmap
 
-- [ ] Automated tests (pytest — unit + integration)
 - [ ] Docker Compose deployment
 - [ ] Admin UI for dynamic agent configuration (SQLite backend)
 - [ ] Migrate chat history from JSON to SQLite
