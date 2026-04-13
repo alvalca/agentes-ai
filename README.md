@@ -2,6 +2,8 @@
 
 A production-grade multi-agent AI system designed for private, local deployment. Built on **LangGraph**, **FastAPI** and **Streamlit**, it runs entirely on your own hardware using **LM Studio** as the LLM backend — no cloud dependencies, no data leaving your network.
 
+![Streaming demo](docs/gifs/streaming_demo.gif)
+
 ---
 
 ## Table of Contents
