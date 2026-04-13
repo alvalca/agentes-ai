@@ -154,6 +154,8 @@ Document generation adapts to content type:
 
 **Why not WeasyPrint for PDF:** tested WeasyPrint as a lighter alternative to LaTeX for PDF generation. It handles markdown/HTML well but renders math as Unicode rather than proper equations — unacceptable for educational worksheets.
 
+![Document generate](docs/gifs/gen_doc.gif)
+
 ### 6. Adaptive RAG chunking
 
 Document type detection determines chunking strategy:
