@@ -9,13 +9,7 @@ from typing import Optional
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-try:
-    from langchain.agents import create_react_agent
-except ImportError:
-    import warnings
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=DeprecationWarning)
-    from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
@@ -191,8 +185,6 @@ def _get_tool_map(rag_tool, doc_tool, agenda_tool=None):
     }
 
 def build_agent(agent_type: str, user_id: str, semantic_ctx: str = ""):
-    import warnings
-    warnings.filterwarnings("ignore", category=DeprecationWarning, module="langgraph")
 
     set_current_user(user_id)
     rag_tool  = make_rag_tool(user_id)
@@ -219,7 +211,7 @@ def build_agent(agent_type: str, user_id: str, semantic_ctx: str = ""):
     else:
         tools = common_tools
 
-    return create_react_agent(model=llm, tools=tools, prompt=merged)
+    return create_agent(model=llm, tools=tools, system_prompt=merged)
 
 def route_message(message: str) -> str:
     try:

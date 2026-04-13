@@ -3,6 +3,7 @@
 data/agent_configs.json
 modelos.conf
 .last_model
+.coverage
 
 # ── Datos de usuario ─────────────────────────────────────────────────────────
 data/chroma/

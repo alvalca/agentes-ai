@@ -19,6 +19,7 @@ A production-grade multi-agent AI system designed for private, local deployment.
 - [Configuration](#configuration)
 - [Usage](#usage)
 - [Project Structure](#project-structure)
+- [Testing](#testing) 
 - [Known Limitations](#known-limitations)
 - [Roadmap](#roadmap)
 
@@ -539,6 +540,16 @@ agentes-ai/
 │   └── prompts.py           # Shared prompt utilities
 ├── frontend/
 │   └── app.py               # Streamlit UI
+├── tests/                   # Test suite (227 tests, 59% coverage)
+│ ├── conftest.py            # Shared fixtures and configuration
+│ ├── test_auth.py           # Auth: hashing, JWT, roles, security edge cases (98% cov)
+│ ├── test_main.py           # API endpoints: validation, auth, error handling (93% cov)
+│ ├── test_agents.py         # Agent logic: build_agent, routing, chat (67% cov)
+│ ├── test_integration.py    # End-to-end: RAG, memory, tools, streaming
+│ ├── test_rag.py            # RAG unit tests: chunking, transcript detection, snippets
+│ ├── test_memory.py         # Semantic memory: add_message, cross-agent, history
+│ ├── test_tools.py          # Tool unit tests: calculator, document generation, code
+│ └── test_agenda.py         # Agenda CRUD: add, list, done, suggest, reorder
 ├── data/                    # Runtime data (gitignored)
 │   ├── chroma/              # Vector stores (RAG + semantic memory)
 │   ├── chat_history/        # Conversation JSON files
@@ -546,11 +557,58 @@ agentes-ai/
 │   ├── documents/           # Generated documents
 │   └── agenda/              # Per-user agenda JSON files
 ├── config.py                # Centralized configuration
+├── pytest.ini               # Test configuration and markers
 ├── agent_configs.example.json
 ├── modelos.conf.example
 ├── .env.example
 ├── iniciar_agentes.sh
 └── README.md
+```
+
+---
+
+## Testing
+
+This project includes a professional-grade test suite to ensure reliability, security, and maintainability.
+
+### 📊 Test Suite Overview
+
+| Metric | Value |
+|--------|-------|
+| **Total tests** | 227 passing |
+| **Overall coverage** | 59% |
+| **Critical modules** | `auth.py`: 98%, `main.py`: 93% |
+| **Execution time** | ~18 seconds |
+
+### 📈 Coverage by Module
+
+| Module | Coverage | Status | Notes |
+|--------|----------|--------|-------|
+| `auth.py` | 98% | 🔐 Critical | Password hashing, JWT tokens, role-based access |
+| `main.py` | 93% | 🌐 Critical | API endpoints, input validation, error handling |
+| `agents.py` | 67% | ✅ Core | Agent orchestration, routing, chat logic |
+| `memory.py` | 54% | 🟡 Complex | Semantic memory, validated by integration tests |
+| `rag.py` | 51% | 🟡 Complex | RAG pipeline, validated end-to-end |
+| `tools.py` | 47% | 🟡 Diverse | Utility tools, covered by integration tests |
+
+### 🧪 Running Tests
+
+```bash
+# Run full test suite
+pytest
+
+# Run with coverage report
+pytest --cov=backend --cov-report=term-missing
+
+# Run only fast tests (development workflow)
+pytest -m "not slow" -v
+
+# Run only security-related tests
+pytest tests/test_auth.py tests/test_main.py -v
+
+# Generate HTML coverage report
+pytest --cov=backend --cov-report=html
+# Then open: htmlcov/index.html
 ```
 
 ---

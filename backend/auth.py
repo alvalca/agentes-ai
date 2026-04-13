@@ -5,7 +5,7 @@
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from typing import Optional
 
@@ -114,7 +114,7 @@ def authenticate_user(username: str, password: str) -> Optional[UserInDB]:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (
+    expire = datetime.now(UTC) + (
         expires_delta if expires_delta
         else timedelta(minutes=JWT_EXPIRE_MINUTES)
     )
