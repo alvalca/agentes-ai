@@ -632,7 +632,7 @@ agentes-ai/
 │   ├── rag.py               # RAG pipeline (index, search, chunking)
 │   ├── memory.py            # Semantic memory, conversation management
 │   ├── auth.py              # JWT authentication
-│   └── tools_programmer.py  # Secure system tools for programmer agent (file I/O, bash/python exec)
+│   └── tools_programmer.py  # Secure tools for programmer agent (file I/O, bash/python exec)
 ├── frontend/
 │   └── app.py               # Streamlit UI
 ├── tests/                   # Test suite (227 tests, 59% coverage)
