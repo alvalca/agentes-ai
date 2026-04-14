@@ -2,7 +2,7 @@
 
 A production-grade multi-agent AI system designed for private, local deployment. Built on **LangGraph**, **FastAPI** and **Streamlit**, it runs entirely on your own hardware using **LM Studio** as the LLM backend — no cloud dependencies, no data leaving your network.
 
-![Streaming demo](docs/gifs/streaming_demo.gif)
+![Streaming demo](docs/assets/streaming_demo.gif)
 
 ---
 
@@ -12,7 +12,9 @@ A production-grade multi-agent AI system designed for private, local deployment.
 - [Architecture](#architecture)
 - [Key Design Decisions](#key-design-decisions)
 - [Agent System](#agent-system)
+- [Multimodal Vision](#multimodal-vision)
 - [RAG Pipeline](#rag-pipeline)
+- [Tools & Code Interpreter](#tools--code-interpreter)
 - [Document Generation](#document-generation)
 - [Semantic Memory](#semantic-memory)
 - [Agenda & Task Management](#agenda--task-management)
@@ -35,6 +37,7 @@ This project started as a personal assistant system and evolved into a multi-use
 
 - **Persistent semantic memory** — agents remember past conversations using vector embeddings, not just recent chat history
 - **Adaptive RAG** — chunking strategy adapts to document type (transcripts vs structured documents)
+- **Multimodal vision** — agents can receive and analyze images alongside text, using models that support vision (Qwen3.5, gema-4, etc.). Images are embedded inline in the conversation UI, enabling real-world use cases like analyzing worksheet photos, charts, tables or handwritten notes
 - **Real document generation** — produces properly formatted PDF and DOCX files with native math equations via pandoc+tectonic/mathml
 - **Per-user configuration** — each user can have different agents, modes and history settings without code changes
 - **Production streaming** — full streaming with tool call visibility (`🔍 Buscando en la web...`) via Server-Sent Events
@@ -68,7 +71,7 @@ This project started as a personal assistant system and evolved into a multi-use
                         │ OpenAI-compatible API
 ┌───────────────────────▼─────────────────────────────────┐
 │                   LM Studio                             │
-│         Local LLMs (Qwen3, Mistral, LLaMA...)           │
+│         Local LLMs (Qwen3.5, Mistral, LLaMA...)         │
 │         CUDA acceleration · Multi-GPU support           │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -154,7 +157,7 @@ Document generation adapts to content type:
 
 **Why not WeasyPrint for PDF:** tested WeasyPrint as a lighter alternative to LaTeX for PDF generation. It handles markdown/HTML well but renders math as Unicode rather than proper equations — unacceptable for educational worksheets.
 
-![Document generate](docs/gifs/gen_doc.gif)
+![Document generate](docs/assets/gendoc_demo.gif)
 
 ### 6. Adaptive RAG chunking
 
@@ -205,6 +208,45 @@ Then assign it to users in `data/agent_configs.json`. No code restart required i
 
 ---
 
+## Multimodal Vision
+
+The system supports image input alongside text, leveraging the vision capabilities of local models such as Qwen3.5 series. This allows agents to "see" and analyze visual content directly within the conversation flow — entirely on-device, without any data leaving your local network.
+
+### How it works
+
+Images are uploaded via the sidebar in the Streamlit UI and sent to the agent as base64-encoded content. In `agents.py`, a `HumanMessage` is constructed with a multimodal structure — `image_url` content parts in OpenAI vision format — that LM Studio passes transparently to the underlying model. The model processes both the visual content and the conversation context simultaneously, with full access to all agent tools (RAG, code interpreter, web search) and semantic memory.
+
+- **Native multimodal input** — images are encoded as `data URI` (base64) and sent as `{mime, data}` objects in the API payload
+- **Automatic construction** — `agents.py` wraps images in `HumanMessage` with `image_url` + `text` structure compatible with the OpenAI/LM Studio standard API
+- **Transparent integration** — the vision model extracts visual information (text, diagrams, charts, screenshots) and combines it with conversation context, available tools and semantic memory
+- **Multiple images per message** — the frontend detects image-only messages and prompts for a text description before sending
+
+### Real-world use cases
+
+| Scenario | What the agent does |
+|----------|---------------------|
+| 📝 **Worksheet replication** | Photo of a printed exercise sheet → agent reads it and generates an identical version with different numbers, preserving layout and formatting |
+| 📊 **Dashboard analysis** | Screenshot of Excel, Grafana or any chart → interpretation of trends, outliers or KPIs on demand |
+| 📐 **Visual problem solving** | Photo of a handwritten equation, flow diagram or technical drawing → step-by-step solution or explanation |
+| 🔧 **Technical support** | Screenshot of an error, log file or configuration → agent analyzes it in context of your question |
+| 🖼️ **Implicit OCR** | Any image containing text → the model reads it without a separate OCR step |
+
+### Technical notes
+
+**Model requirements:** vision support must be available in the loaded LM Studio model. Compatible models include `Qwen3-VL`, `Qwen3.5` and `gema-4`. The system degrades gracefully — if the loaded model does not support vision, it ignores the image and responds to the text only.
+
+**Image size:** recommended under 4 MB per image to avoid excessive latency. Images are not resized automatically — if the model struggles with large images, resize client-side before uploading.
+
+**RAG and images:** the current RAG pipeline operates on text only. Images are processed directly by the LLM without vector indexing.
+
+**Chat mode compatibility:** works in both `simple_chat` and `agent_chat` modes. In agent mode, the image is injected before the router resolves the agent profile and tool selection — meaning a specialized agent (pedagogico, programador, etc.) receives the image with the same routing logic as a text message.
+
+> 🔒 **Privacy:** images never leave your network. They are processed locally through LM Studio and are not stored to disk unless the agent explicitly generates a derived document from them.
+
+![Multimodal demo](docs/assets/multimodal_demo.gif)
+
+---
+
 ## RAG Pipeline
 
 ```
@@ -246,6 +288,55 @@ PDF, TXT, MD, EPUB, XLSX, XLS, CSV, PPTX, DOCX, HTML
 ### Embedding Model
 
 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` — chosen for multilingual support (Spanish/English) and efficiency on consumer GPUs. The model runs on a secondary GPU (or CPU fallback) to avoid competing with inference on the primary GPU.
+
+---
+
+## Tools & Code Interpreter
+
+The system includes a secure Python execution sandbox that allows agents to perform calculations, data analysis and visualisations in real time, directly within the chat. All execution happens locally — no external APIs, no data leaving your machine.
+
+### How it works
+
+Code submitted by the agent runs inside a `ThreadPoolExecutor` with a hard 15-second timeout. A restricted namespace pre-loads the scientific stack (`numpy`, `pandas`, `matplotlib`, `sympy`, `scipy`) while blocking access to `os`, `sys`, `pathlib` and network calls. Output is captured and returned to the agent with structured prefixes that the frontend parses for appropriate rendering.
+
+Two interception mechanisms handle file output transparently:
+
+- **`DataFrame.to_csv` / `DataFrame.to_excel`** — monkey-patched before execution and restored afterwards (even on error). Any path the agent tries to write to is silently redirected to `data/documents/{user_id}/` with a UUID filename, and a download link is returned in the chat.
+- **`plt.show()`** — intercepted to save the figure as a PNG in the user's folder instead of opening a window. The frontend renders it inline in the conversation.
+
+### Real-world use cases
+
+| Scenario | What the agent does |
+|----------|---------------------|
+| 📈 **Data visualisation** | "Plot a trend chart with matplotlib" → executes code → displays plot inline + saves PNG |
+| 🔢 **Symbolic computation** | Integrates equations with `sympy`, simplifies expressions or solves algebraic systems step by step |
+| 📊 **Pandas analysis** | Filters, groups or transforms tabular data; returns HTML tables or downloadable CSV files |
+| 🧮 **Quick statistics** | Calculates mean, standard deviation, correlations or generates probability distributions without leaving the chat |
+
+### Output format
+
+Results are returned with structured prefixes that the Streamlit frontend parses for appropriate rendering:
+
+| Prefix | Meaning | Frontend behaviour |
+|--------|---------|-------------------|
+| `TABLE:` | HTML table from a DataFrame | Rendered as interactive table |
+| `PLOT:` | Path to a saved PNG figure | Displayed inline in chat |
+| `FILE:` | Path to a generated file | Shown as a download button |
+| *(plain text)* | Computed value or printed output | Displayed as code block |
+
+### Technical notes
+
+**Timeout:** executions exceeding 15 seconds are interrupted with a clear message. The timeout is deterministic — implemented via `Future.result(timeout=15)` on a `ThreadPoolExecutor`, not a signal, making it safe in multi-threaded FastAPI contexts.
+
+**Pandas restoration:** `to_csv` and `to_excel` are patched immediately before execution and restored in a `finally` block, guaranteeing restoration even if the code raises an exception. This was a real bug — early versions only restored on success.
+
+**Absolute path interception:** an early version of the interception had a guard `if not path.startswith("/")` that silently skipped absolute paths. The current implementation intercepts all string paths regardless of whether they are relative or absolute.
+
+**Security boundary:** this is a convenience sandbox, not a hardened security perimeter. It blocks common escape vectors (`os`, `sys`, network imports) but is designed for trusted users in a private local deployment, not for untrusted public input.
+
+> 🔒 **Privacy:** code runs 100% locally. No external API calls are made during execution. Generated files remain on your machine in `data/documents/{user_id}/`.
+
+![Code interpreter demo](docs/assets/code_demo.gif)
 
 ---
 
@@ -545,15 +636,22 @@ agentes-ai/
 ├── frontend/
 │   └── app.py               # Streamlit UI
 ├── tests/                   # Test suite (227 tests, 59% coverage)
-│ ├── conftest.py            # Shared fixtures and configuration
-│ ├── test_auth.py           # Auth: hashing, JWT, roles, security edge cases (98% cov)
-│ ├── test_main.py           # API endpoints: validation, auth, error handling (93% cov)
-│ ├── test_agents.py         # Agent logic: build_agent, routing, chat (67% cov)
-│ ├── test_integration.py    # End-to-end: RAG, memory, tools, streaming
-│ ├── test_rag.py            # RAG unit tests: chunking, transcript detection, snippets
-│ ├── test_memory.py         # Semantic memory: add_message, cross-agent, history
-│ ├── test_tools.py          # Tool unit tests: calculator, document generation, code
-│ └── test_agenda.py         # Agenda CRUD: add, list, done, suggest, reorder
+│   ├── conftest.py          # Shared fixtures and configuration
+│   ├── test_auth.py         # Auth: hashing, JWT, roles, security edge cases (98% cov)
+│   ├── test_main.py         # API endpoints: validation, auth, error handling (93% cov)
+│   ├── test_agents.py       # Agent logic: build_agent, routing, chat (67% cov)
+│   ├── test_integration.py  # End-to-end: RAG, memory, tools, streaming
+│   ├── test_rag.py          # RAG unit tests: chunking, transcript detection, snippets
+│   ├── test_memory.py       # Semantic memory: add_message, cross-agent, history
+│   ├── test_tools.py        # Tool unit tests: calculator, document generation, code
+│   └── test_agenda.py       # Agenda CRUD: add, list, done, suggest, reorder
+├── docs/
+│   └── assets/              # GIFs, screenshots and demo videos for README
+│       ├── streaming_demo.gif
+│       ├── multimodal_demo.gif
+│       ├── testing_demo.gif
+│       ├── gendoc_demo.gif
+│       └── code_demo.gif
 ├── data/                    # Runtime data (gitignored)
 │   ├── chroma/              # Vector stores (RAG + semantic memory)
 │   ├── chat_history/        # Conversation JSON files
@@ -614,6 +712,8 @@ pytest tests/test_auth.py tests/test_main.py -v
 pytest --cov=backend --cov-report=html
 # Then open: htmlcov/index.html
 ```
+
+![Testing demo](docs/assets/testing_demo.gif)
 
 ---
 
