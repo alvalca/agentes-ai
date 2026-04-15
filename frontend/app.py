@@ -165,6 +165,7 @@ def init_session():
         "selected_agent": None,
         "history_loaded":    False,
         "active_images":     [],
+        "img_uploader_key":  0,
         "active_model":      "",
         "conversation_id":   None,
         "conversations":     [],
@@ -349,7 +350,7 @@ def render_sidebar():
                 "Imagen", type=["jpg", "jpeg", "png", "gif", "webp"],
                 label_visibility="collapsed",
                 accept_multiple_files=True,
-                key="img_uploader",
+                key=f"img_uploader_{st.session_state.img_uploader_key}",
             )
             if img_files:
                 import base64
@@ -651,7 +652,8 @@ def page_chat():
                     caption=img["name"], width=120,
                 )
                 if st.button(f"✕ Descartar", key=f"discard_{i}"):
-                    st.session_state.active_images.pop(i)
+                    st.session_state.active_images.pop(i)                    
+                    st.session_state.img_uploader_key += 1
                     st.rerun()
 
     user_input = st.chat_input("Escribe tu mensaje...")
