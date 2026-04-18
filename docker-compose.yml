@@ -1,0 +1,86 @@
+# ── docker-compose.yml ────────────────────────────────────────────────────────
+# Orquesta backend (FastAPI) y frontend (Streamlit)
+# LM Studio NO se incluye aquí — corre en el host
+#
+# Uso:
+#   docker compose up --build      # primera vez (construye las imágenes)
+#   docker compose up              # siguientes veces
+#   docker compose down            # detener y eliminar contenedores
+#   docker compose logs -f         # ver logs en tiempo real
+#   docker compose logs backend    # logs solo del backend
+
+services:
+
+  # ── Backend: FastAPI + uvicorn ──────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: agentes_backend
+    restart: unless-stopped
+
+    # Variables de entorno — las privadas vienen de .env (nunca se commiten)
+    env_file:
+      - .env
+    environment:
+      # LM Studio corre en el host, no en Docker
+      # host.docker.internal resuelve a la IP del host desde dentro del contenedor
+      # Si no funciona, sustituir por la IP local (ej: 192.168.1.X)
+      LM_STUDIO_URL: ${LM_STUDIO_URL:-http://host.docker.internal:1234/v1}
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+
+    ports:
+      - "8000:8000"
+
+    # Volúmenes: mapean carpetas del host al contenedor
+    # Así los datos persisten aunque el contenedor se destruya y recree
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # Caché de modelos HuggingFace — evita redescargar embeddings en cada rebuild
+      - huggingface_cache:/root/.cache/huggingface
+
+    # El backend necesita comunicarse con LM Studio en el host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── Frontend: Streamlit ─────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: agentes_frontend
+    restart: unless-stopped
+
+    env_file:
+      - .env
+    environment:
+      # El frontend se comunica con el backend vía la red interna de Docker
+      # "backend" es el nombre del servicio definido arriba — Docker lo resuelve
+      API_URL: "http://backend:8000"
+
+    ports:
+      - "8501:8501"
+
+    # El frontend depende del backend — espera a que esté healthy antes de arrancar
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    volumes:
+      # Solo necesita acceso a documentos generados para descargas
+      - ./data/documents:/app/data/documents
+
+# ── Volúmenes nombrados ────────────────────────────────────────────────────────
+# Docker gestiona estos volúmenes — persisten entre docker compose down/up
+volumes:
+  huggingface_cache:
+    driver: local

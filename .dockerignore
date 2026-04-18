@@ -1,0 +1,50 @@
+# ── .dockerignore ─────────────────────────────────────────────────────────────
+# Archivos que Docker NO copia al construir la imagen
+# Mismo principio que .gitignore — excluir lo que no necesita el contenedor
+
+# Datos de usuario — se montan como volúmenes, no se copian en la imagen
+data/
+logs/
+
+# Entorno de desarrollo local
+.env
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Modelos — demasiado grandes, se descargan la primera vez
+models/
+*.gguf
+.cache/
+
+# Git
+.git/
+.gitignore
+
+# Documentación y assets — no necesarios en el contenedor
+docs/
+*.md
+README*
+
+# Tests — no necesarios en producción
+tests/
+
+# Archivos de configuración de desarrollo
+.env.example
+modelos.conf
+modelos.conf.example
+agent_configs.example.json
+iniciar_agentes.sh
+menu_modelos.sh
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store

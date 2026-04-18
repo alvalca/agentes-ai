@@ -1,0 +1,56 @@
+# ── Dockerfile.backend ────────────────────────────────────────────────────────
+# Backend: FastAPI + uvicorn + todas las dependencias de ML
+# Base: imagen oficial de Python 3.12 slim (sin GUI, sin extras innecesarios)
+FROM python:3.12-slim
+
+# Evitar prompts interactivos durante apt
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Instalar dependencias del sistema necesarias para las librerías Python
+# build-essential: compilar extensiones C (chromadb, tokenizers...)
+# pandoc: generación de documentos
+# git: necesario para algunas instalaciones pip
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    git \
+    pandoc \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Instalar tectonic vía script oficial (fallback robusto)
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://fallaciousreasoning.com/tectonic-installer/debian/install.sh | sh
+
+# Directorio de trabajo dentro del contenedor
+WORKDIR /app
+
+# ── Instalar dependencias Python ──────────────────────────────────────────────
+# Copiamos requirements primero para aprovechar la caché de Docker:
+# si requirements.txt no cambia, Docker reutiliza esta capa sin reinstalar
+COPY requirements.txt .
+
+# Instalar en grupos para claridad (mismo orden que el README)
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# ── Copiar código del proyecto ────────────────────────────────────────────────
+COPY backend/ ./backend/
+COPY config.py .
+
+# Crear directorios de datos (serán sobreescritos por volúmenes en compose)
+RUN mkdir -p data/chroma data/chat_history data/uploads \
+             data/documents data/agenda data/indexes logs
+
+# Puerto que expone el backend
+EXPOSE 8000
+
+# Variables de entorno por defecto (sobreescribibles desde docker-compose.yml)
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Comando de arranque
+# --host 0.0.0.0 es necesario para que el contenedor sea accesible desde fuera
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", \
+     "--log-level", "info"]

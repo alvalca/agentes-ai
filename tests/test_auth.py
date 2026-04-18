@@ -14,8 +14,7 @@ from fastapi import HTTPException
 # Importar módulo bajo test
 try:
     import backend.auth as auth_module
-    from backend.auth import (
-        pwd_context,
+    from backend.auth import (        
         verify_password,
         get_password_hash,
         create_access_token,

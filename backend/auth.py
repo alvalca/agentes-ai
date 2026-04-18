@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
@@ -25,7 +25,6 @@ from config import (
 logger = logging.getLogger(__name__)
 
 # ── Configuración de seguridad ────────────────────────────────────────────────
-pwd_context    = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme  = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 # ── Archivo de usuarios (JSON local) ─────────────────────────────────────────
@@ -76,7 +75,7 @@ def _init_users() -> None:
     users = _load_users()
     if not users:
         logger.info("Creando usuario admin por defecto...")
-        hashed = pwd_context.hash(DEFAULT_ADMIN_PASS)
+        hashed = get_password_hash(DEFAULT_ADMIN_PASS)
         users[DEFAULT_ADMIN_USER] = {
             "username":        DEFAULT_ADMIN_USER,
             "email":           "admin@local",
@@ -93,10 +92,16 @@ _init_users()
 
 # ── Funciones de autenticación ────────────────────────────────────────────────
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    return bcrypt.checkpw(
+        plain_password.encode("utf-8"), 
+        hashed_password.encode("utf-8")
+    )
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(
+        password.encode("utf-8"), 
+        bcrypt.gensalt()
+    ).decode("utf-8")
 
 def get_user(username: str) -> Optional[UserInDB]:
     users = _load_users()

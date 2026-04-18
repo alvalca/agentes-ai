@@ -13,7 +13,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-API_URL = "http://localhost:8000"
+import os as _os
+API_URL = _os.getenv("API_URL", "http://localhost:8000")
 
 st.markdown("""
 <style>
