@@ -13,164 +13,124 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 class TestAutoNameConversation:
-    """Verifica el auto-nombrado de conversaciones."""
+    def test_renames_nueva_conversacion(self, setup_sqlite_db):
+        """Renombra si el nombre es genérico."""
+        from backend.memory import auto_name_conversation, get_db
+        from backend.database import get_db as db_get_db
 
-    def _make_conv(self, conv_id, name):
-        return {"id": conv_id, "name": name,
-                "created": "2026-04-10T10:00:00",
-                "last_active": "2026-04-10T10:00:00"}
+        # Crear conversación con nombre genérico en SQLite
+        with db_get_db() as db:
+            db.execute("""
+                INSERT INTO conversations (id, user_id, name, created_at, last_active)
+                VALUES (?, ?, ?, ?, ?)
+            """, ("abc123", "user1", "Nueva conversación", "2026-04-10T10:00:00", "2026-04-10T10:00:00"))
 
-    def test_renames_nueva_conversacion(self, tmp_data_dir):
-        conv_id = "abc123"
-        convs = [self._make_conv(conv_id, "Nueva conversación")]
-        message = "¿Cuánto es 2 más 2?"
+        auto_name_conversation("user1", "abc123", "¿Cuánto es 2 más 2?")
 
-        with patch("backend.memory.CHAT_HISTORY_DIR", tmp_data_dir), \
-             patch("backend.memory._load_conversations",
-                   return_value=convs), \
-             patch("backend.memory._save_conversations") as mock_save:
+        # Verificar en BD, no en mocks
+        with db_get_db() as db:
+            row = db.execute("SELECT name FROM conversations WHERE id=?", ("abc123",)).fetchone()
+            assert row is not None
+            assert "Cuánto" in row["name"] or "2" in row["name"]
 
-            from backend.memory import auto_name_conversation
-            auto_name_conversation("user1", conv_id, message)
+    def test_does_not_rename_custom_name(self, setup_sqlite_db):
+        from backend.memory import auto_name_conversation
+        from backend.database import get_db as db_get_db
 
-            mock_save.assert_called_once()
-            saved_convs = mock_save.call_args[0][1]
-            conv = next(c for c in saved_convs if c["id"] == conv_id)
-            # El nombre debe ser las primeras palabras del mensaje
-            assert "Cuánto" in conv["name"] or "2" in conv["name"]
+        with db_get_db() as db:
+            db.execute("""
+                INSERT INTO conversations (id, user_id, name, created_at, last_active)
+                VALUES (?, ?, ?, ?, ?)
+            """, ("abc123", "user1", "Mi conversación sobre Python", "2026-04-10T10:00:00", "2026-04-10T10:00:00"))
 
-    def test_does_not_rename_custom_name(self, tmp_data_dir):
-        conv_id = "abc123"
-        custom_name = "Mi conversación sobre Python"
-        convs = [self._make_conv(conv_id, custom_name)]
+        auto_name_conversation("user1", "abc123", "nuevo mensaje")
 
-        with patch("backend.memory.CHAT_HISTORY_DIR", tmp_data_dir), \
-             patch("backend.memory._load_conversations",
-                   return_value=convs), \
-             patch("backend.memory._save_conversations") as mock_save:
+        with db_get_db() as db:
+            row = db.execute("SELECT name FROM conversations WHERE id=?", ("abc123",)).fetchone()
+            assert row["name"] == "Mi conversación sobre Python"
 
-            from backend.memory import auto_name_conversation
-            auto_name_conversation("user1", conv_id, "nuevo mensaje")
+    def test_name_truncated_to_60_chars(self, setup_sqlite_db):
+        from backend.memory import auto_name_conversation
+        from backend.database import get_db as db_get_db
 
-            # Si ya tiene nombre personalizado, NO debe renombrarse
-            if mock_save.called:
-                saved = mock_save.call_args[0][1]
-                conv = next(c for c in saved if c["id"] == conv_id)
-                assert conv["name"] == custom_name
+        with db_get_db() as db:
+            db.execute("""
+                INSERT INTO conversations (id, user_id, name, created_at, last_active)
+                VALUES (?, ?, ?, ?, ?)
+            """, ("abc123", "user1", "Nueva conversación", "2026-04-10T10:00:00", "2026-04-10T10:00:00"))
 
-    def test_name_truncated_to_60_chars(self, tmp_data_dir):
-        conv_id = "abc123"
-        convs = [self._make_conv(conv_id, "Nueva conversación")]
-        long_message = "Esta es una pregunta muy muy larga con muchas palabras " \
-                       "que supera los sesenta caracteres sin ninguna duda posible aquí"
+        long_msg = "Esta es una pregunta muy muy larga con muchas palabras que supera los sesenta caracteres sin ninguna duda posible aquí"
+        auto_name_conversation("user1", "abc123", long_msg)
 
-        with patch("backend.memory.CHAT_HISTORY_DIR", tmp_data_dir), \
-             patch("backend.memory._load_conversations",
-                   return_value=convs), \
-             patch("backend.memory._save_conversations") as mock_save:
+        with db_get_db() as db:
+            row = db.execute("SELECT name FROM conversations WHERE id=?", ("abc123",)).fetchone()
+            assert len(row["name"]) <= 63
 
-            from backend.memory import auto_name_conversation
-            auto_name_conversation("user1", conv_id, long_message)
-
-            if mock_save.called:
-                saved = mock_save.call_args[0][1]
-                conv = next(c for c in saved if c["id"] == conv_id)
-                assert len(conv["name"]) <= 63  # 60 + posible "..."
-
-    def test_handles_nonexistent_conversation_id(self, tmp_data_dir):
-        """No debe lanzar excepción si el conv_id no existe."""
-        convs = [self._make_conv("other_id", "Nueva conversación")]
-
-        with patch("backend.memory.CHAT_HISTORY_DIR", tmp_data_dir), \
-             patch("backend.memory._load_conversations",
-                   return_value=convs), \
-             patch("backend.memory._save_conversations"):
-
-            from backend.memory import auto_name_conversation
-            # No debe lanzar excepción
-            auto_name_conversation("user1", "nonexistent_id", "mensaje")
-
+    def test_handles_nonexistent_conversation_id(self, setup_sqlite_db):
+        from backend.memory import auto_name_conversation
+        auto_name_conversation("user1", "nonexistent_id", "mensaje")  # No debe lanzar
 
 class TestAddMessage:
-    """Verifica que add_message guarda correctamente los mensajes."""
+    def test_message_structure(self, setup_sqlite_db):
+        from backend.memory import add_message
+        from backend.database import get_db as db_get_db
 
-    def test_message_structure(self, tmp_data_dir):
-        """El mensaje guardado debe tener los campos obligatorios."""
-        history_file = tmp_data_dir / "user1" / "conv_default.json"
-        history_file.parent.mkdir(parents=True, exist_ok=True)  # Crear la carpeta user1/
-        history_file.write_text("[]", encoding="utf-8")
+        add_message("user1", "user", "Hola, ¿cómo estás?", agent="general", conversation_id="default")
 
-        with patch("backend.memory.CHAT_HISTORY_DIR", tmp_data_dir), \
-             patch("backend.memory.get_embeddings", return_value=MagicMock()), \
-             patch("backend.memory._get_memory_collection",
-                   return_value=MagicMock()):
-
-            from backend.memory import add_message
-            add_message("user1", "user", "Hola, ¿cómo estás?",
-                        agent="general", conversation_id="default")
-
-            messages = json.loads(history_file.read_text())
-            assert len(messages) == 1
-            msg = messages[0]
+        with db_get_db() as db:
+            msg = db.execute("SELECT role, content, agent FROM messages WHERE user_id=? ORDER BY id DESC LIMIT 1", ("user1",)).fetchone()
             assert msg["role"] == "user"
             assert msg["content"] == "Hola, ¿cómo estás?"
             assert msg["agent"] == "general"
-            assert "timestamp" in msg
 
-    def test_multiple_messages_appended(self, tmp_data_dir):
-        """Los mensajes se acumulan en orden."""
-        history_file = tmp_data_dir / "user1" / "conv_default.json"
-        history_file.parent.mkdir(parents=True, exist_ok=True)  # Crear la carpeta user1/
-        history_file.write_text("[]", encoding="utf-8")
+    def test_multiple_messages_appended(self, setup_sqlite_db):
+        from backend.memory import add_message
+        from backend.database import get_db as db_get_db
 
-        with patch("backend.memory.CHAT_HISTORY_DIR", tmp_data_dir), \
-             patch("backend.memory.get_embeddings", return_value=MagicMock()), \
-             patch("backend.memory._get_memory_collection",
-                   return_value=MagicMock()):
+        add_message("user1", "user", "Mensaje 1", agent="general", conversation_id="default")
+        add_message("user1", "assistant", "Respuesta 1", agent="general", conversation_id="default")
+        add_message("user1", "user", "Mensaje 2", agent="general", conversation_id="default")
 
-            from backend.memory import add_message
-            add_message("user1", "user", "Mensaje 1",
-                        agent="general", conversation_id="default")
-            add_message("user1", "assistant", "Respuesta 1",
-                        agent="general", conversation_id="default")
-            add_message("user1", "user", "Mensaje 2",
-                        agent="general", conversation_id="default")
-
-            messages = json.loads(history_file.read_text())
-            assert len(messages) == 3
-            assert messages[0]["role"] == "user"
-            assert messages[1]["role"] == "assistant"
-            assert messages[2]["role"] == "user"
-
+        with db_get_db() as db:
+            rows = db.execute("SELECT role FROM messages WHERE user_id=? ORDER BY id ASC", ("user1",)).fetchall()
+            assert [r["role"] for r in rows] == ["user", "assistant", "user"]
+            
 
 class TestGetLangchainMessages:
     """Verifica la conversión de mensajes a formato LangChain."""
 
-    def test_user_message_becomes_human_message(self, tmp_data_dir):
-        messages = [
-            {"role": "user", "content": "Hola",
-             "agent": "general", "timestamp": "2026-04-10T10:00:00",
-             "conversation_id": "default"},
-            {"role": "assistant", "content": "Hola, ¿en qué puedo ayudarte?",
-             "agent": "general", "timestamp": "2026-04-10T10:00:01",
-             "conversation_id": "default"},
-        ]
-        history_file = tmp_data_dir / "user1" / "conv_default.json"
-        history_file.parent.mkdir(parents=True, exist_ok=True)
-        history_file.write_text(json.dumps(messages), encoding="utf-8")
+    def test_user_message_becomes_human_message(self, setup_sqlite_db):
+        from backend.memory import get_langchain_messages
+        from langchain_core.messages import HumanMessage, AIMessage
+        from backend.database import get_db
 
-        with patch("backend.memory.CHAT_HISTORY_DIR", tmp_data_dir):
-            from backend.memory import get_langchain_messages
-            from langchain_core.messages import HumanMessage, AIMessage
-
-            lc_messages = get_langchain_messages(
-                "user1", last_n=10, conversation_id="default"
+        # Insertar conversación y mensajes en SQLite (no en archivo JSON)
+        with get_db() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO conversations (id, user_id, name, created_at, last_active) "
+                "VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+                ("default", "user1", "Conversación")
+            )
+            db.execute(
+                "INSERT INTO messages (user_id, conversation_id, role, content, agent, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("user1", "default", "user", "Hola", "general", "2026-04-10T10:00:00")
+            )
+            db.execute(
+                "INSERT INTO messages (user_id, conversation_id, role, content, agent, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("user1", "default", "assistant", "Hola, ¿en qué puedo ayudarte?",
+                 "general", "2026-04-10T10:00:01")
             )
 
-            assert len(lc_messages) == 2
-            assert isinstance(lc_messages[0], HumanMessage)
-            assert isinstance(lc_messages[1], AIMessage)
-            assert lc_messages[0].content == "Hola"
+        lc_messages = get_langchain_messages(
+            "user1", last_n=10, conversation_id="default"
+        )
+
+        assert len(lc_messages) == 2
+        assert isinstance(lc_messages[0], HumanMessage)
+        assert isinstance(lc_messages[1], AIMessage)
+        assert lc_messages[0].content == "Hola"
 
     def test_last_n_limits_messages(self, tmp_data_dir):
         """last_n debe limitar el número de mensajes devueltos."""

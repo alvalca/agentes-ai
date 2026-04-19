@@ -21,7 +21,7 @@ A production-grade multi-agent AI system designed for private, local deployment.
 - [Hardware Requirements](#hardware-requirements)
 - [Installation](#installation)
 - [Configuration](#configuration)
-- [Usage](#usage)
+- [Docker Deployment](#docker-deployment-reproducible-setup)
 - [Project Structure](#project-structure)
 - [Testing](#testing) 
 - [Known Limitations](#known-limitations)
@@ -41,6 +41,8 @@ This project started as a personal assistant system and evolved into a multi-use
 - **Real document generation** — produces properly formatted PDF and DOCX files with native math equations via pandoc+tectonic/mathml
 - **Per-user configuration** — each user can have different agents, modes and history settings without code changes
 - **Production streaming** — full streaming with tool call visibility (`🔍 Buscando en la web...`) via Server-Sent Events
+- **SQLite persistence** — transactional storage with WAL mode, foreign keys and indexed queries, replacing JSON file storage. Migration script with dry-run support for zero-loss transitions
+- **Reproducible deployment** — Docker Compose with healthchecks, persistent volume mapping and `host-gateway` networking for LM Studio integration
 
 ---
 
@@ -84,24 +86,88 @@ This project started as a personal assistant system and evolved into a multi-use
 - **LlamaIndex** for RAG-specific components — `SentenceSplitter` for semantically-aware chunking, `BM25Retriever` for keyword search, and `TextNode` for the hybrid search pipeline. LlamaIndex's RAG primitives are more mature than LangChain's equivalents for these specific tasks, so both libraries coexist: LangChain for agents/tools/streaming, LlamaIndex for document processing and retrieval.
 - **ChromaDB** for both RAG and semantic memory — a single vector store handles document retrieval and conversation memory, simplifying ops and sharing the same embedding model.
 - **LM Studio** as LLM backend — OpenAI-compatible API means zero code changes to switch models. Any GGUF or MLX model works out of the box.
+- **SQLite with WAL mode + foreign keys** for transactional persistence, replacing JSON legacy storage. Migration script with `dry_run` support ensures zero data loss during transition.
+- **Docker Compose deployment** with healthchecks, volume mapping for data persistence, and `host-gateway` networking for LM Studio integration. Toggle script (`iniciar_agentes.sh`) allows seamless switching between local dev and Docker reproducible mode.
 
 ---
 
 ## Key Design Decisions
 
-### 1. Per-user agent configuration (`agent_configs.json`)
+### 1. Per-user agent configuration (SQLite + JSON fallback)
 
-Each user has their own agent configuration stored in `data/agent_configs.json`:
+Each user's agent configuration is now stored in the **SQLite database** (`agent_configs` table), with backward compatibility for the legacy `data/agent_configs.json` file.
 
+#### Configuration schema (identical to legacy JSON)
+
+```sql
+-- Schema from backend/database.py
+CREATE TABLE IF NOT EXISTS agent_configs (
+    user_id          TEXT PRIMARY KEY,
+    mode             TEXT NOT NULL DEFAULT 'manual_select',  -- 'manual_select' | 'auto_router'
+    agents_json      TEXT NOT NULL DEFAULT '["general"]',    -- JSON array of agent IDs
+    default_agent    TEXT NOT NULL DEFAULT 'general',
+    history_days     INTEGER NOT NULL DEFAULT 1,
+    history_max_msg  INTEGER NOT NULL DEFAULT 10,
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(username) ON DELETE CASCADE
+);
+```
+
+#### Example configurations
+
+| User type | mode | agents | default_agent | Use case |
+|-----------|------|--------|---------------|----------|
+| `admin` | `manual_select` | `["programador", "general"]` | `"general"` | Admin chooses agent manually per message |
+| `teacher` | `auto_router` | `["pedagogico", "psicologo", "general"]` | `"auto"` | LLM router auto-selects agent based on message content |
+
+#### How to configure
+
+**Option A: Via Admin API (recommended)**
+```bash
+# Create user with auto_router mode
+curl -X POST "http://localhost:8000/admin/users" \
+  -H "Authorization: Bearer ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "teacher",
+    "password": "securepass",
+    "email": "teacher@example.com",
+    "is_admin": false
+  }'
+
+# Update agent config for user
+curl -X PUT "http://localhost:8000/admin/users/teacher/config" \
+  -H "Authorization: Bearer ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mode": "auto_router",
+    "agents": ["pedagogico", "psicologo", "general"],
+    "default_agent": "auto",
+    "history_days": 3,
+    "history_max_msg": 15
+  }'
+```
+
+**Option B: Direct SQL (advanced)**
+```bash
+sqlite3 data/agentes.db "
+INSERT OR REPLACE INTO agent_configs
+(user_id, mode, agents_json, default_agent, history_days, history_max_msg)
+VALUES (
+  'teacher',
+  'auto_router',
+  '[\"pedagogico\", \"psicologo\", \"general\"]',
+  'auto',
+  3,
+  15
+);
+"
+```
+
+**Option C: Legacy JSON fallback**
+If the SQLite table is empty, the system falls back to reading `data/agent_configs.json`. This ensures zero-downtime migration:
 ```json
 {
-  "admin": {
-    "mode": "manual_select",
-    "agents": ["programador", "general"],
-    "default_agent": "general",
-    "history_days": 1,
-    "history_max_msg": 10
-  },
   "teacher": {
     "mode": "auto_router",
     "agents": ["pedagogico", "psicologo", "general"],
@@ -112,7 +178,39 @@ Each user has their own agent configuration stored in `data/agent_configs.json`:
 }
 ```
 
-**Why this approach:** embedding user config in code (`if user == "teacher"`) is brittle and leaks private information into the repository. A gitignored JSON file keeps user data separate while remaining trivially editable without restarting the server. The `agent_configs.example.json` file in the repo serves as a template.
+#### How auto_router works
+
+When `mode: "auto_router"` and `default_agent: "auto"`:
+
+1. User sends a message
+2. Backend calls the lightweight `ROUTER_PROMPT` classifier (one fast LLM call, ~200ms)
+3. Router returns `PEDAGOGICO`, `EMOCIONAL`, or `GENERAL`
+4. System maps classification → agent:
+   - `PEDAGOGICO` → `pedagogico` agent
+   - `EMOCIONAL` → `psicologo` agent  
+   - `GENERAL` → `general` agent
+5. Selected agent processes the message with its specialized prompt and tools
+
+**Router prompt excerpt** (`backend/agent_profiles.py`):
+```python
+ROUTER_PROMPT = """
+Classify this teacher message into ONE category:
+PEDAGOGICO: curriculum, exercises, lesson plans, worksheets, student issues
+EMOCIONAL: burnout, frustration, difficult days, need for support
+GENERAL: web searches, calculations, general questions
+Respond ONLY with: PEDAGOGICO or EMOCIONAL or GENERAL
+"""
+```
+
+#### Why SQLite for config?
+
+- ✅ **Transactional updates** — no partial writes or file corruption
+- ✅ **Foreign key integrity** — configs cannot reference non-existent users
+- ✅ **Atomic admin operations** — create user + config in one transaction
+- ✅ **Query efficiency** — filter users by mode/agents without loading entire file
+- ✅ **Backward compatible** — existing JSON configs auto-migrate; fallback ensures zero downtime
+
+> 💡 **Tip**: After migrating, `agent_configs.json` is preserved as backup but no longer read unless the database is missing. You can safely archive it once you confirm the migration succeeded.
 
 ### 2. Auto-router for multi-role users
 
@@ -204,7 +302,28 @@ AGENT_REGISTRY["mi_agente"] = {
 }
 ```
 
-Then assign it to users in `data/agent_configs.json`. No code restart required if using dynamic config loading.
+Then assign it to users. Configuration is loaded dynamically from SQLite on every request, so **no server restart is required**. You can update it using one of these methods:
+
+**Option A: Python API (Recommended)**
+Use the built-in `save_user_config()` function. It handles JSON serialization, validation, and atomic updates safely:
+```python
+from backend.agent_profiles import save_user_config
+
+save_user_config("your_username", {
+    "mode": "manual_select",
+    "agents": ["general", "programador", "mi_agente"],  # ⚠️ Must include ALL allowed agents
+    "default_agent": "general",
+    "history_days": 1,
+    "history_max_msg": 10
+})
+```
+
+**Option B: Direct SQL (Advanced)**
+```bash
+sqlite3 data/agentes.db "UPDATE agent_configs SET agents_json = '[\"general\", \"programador\", \"mi_agente\"]' WHERE user_id = 'your_username';"
+```
+
+> 💡 **Important:** The `agents` field requires the **complete list** of agents the user is allowed to access. It replaces the entire array on update, so omitting an existing agent will remove it from that user's profile.
 
 ---
 
@@ -520,8 +639,11 @@ pip install sympy
 ```bash
 # Copy example configurations
 cp .env.example .env                              # secrets and private paths
-cp agent_configs.example.json data/agent_configs.json   # user configuration
 cp modelos.conf.example modelos.conf              # list of available models
+
+# ⚠️ agent_configs.json is NO LONGER REQUIRED.
+# The system now uses SQLite by default with built-in fallback configs.
+# The example file is kept only as a reference template if needed.
 
 # Edit .env — minimum required: SECRET_KEY, ADMIN_USER, ADMIN_PASS
 nano .env
@@ -560,22 +682,41 @@ streamlit run frontend/app.py --server.port 8501
 
 Access the UI at `http://localhost:8501`
 
-### 7. Create users
+> **SQLite:** the database (`data/agentes.db`) is created and initialised automatically on first startup — no manual setup required. To migrate existing JSON data, use the `POST /admin/migrate-to-sqlite` endpoint after logging in as admin.
 
-The admin panel (accessible with admin credentials) allows creating users and assigning agent configurations.
+### 7. Create users and assign configurations
+User management and agent configuration are now stored in **SQLite** with full transactional integrity.
 
-Alternatively, edit `data/agent_configs.json` directly:
-```json
-{
-  "your_username": {
-    "mode": "manual_select",
-    "agents": ["general"],
-    "default_agent": "general",
-    "history_days": 1,
-    "history_max_msg": 10
-  }
-}
+**Create a new user (Admin API):**
+```bash
+curl -X POST "http://localhost:8000/admin/users" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "your_username",
+    "password": "secure_password",
+    "email": "user@example.com",
+    "is_admin": false
+  }'
 ```
+
+**Assign agent configuration (SQLite):**
+Agent configs live in the `agent_configs` table. You can update them directly via SQL:
+```bash
+sqlite3 data/agentes.db "
+INSERT OR REPLACE INTO agent_configs
+(user_id, mode, agents_json, default_agent, history_days, history_max_msg)
+VALUES (
+  'your_username',
+  'manual_select',
+  '[\"general\"]',
+  'general',
+  1,
+  10
+);"
+```
+
+> 💡 **Dynamic loading:** `get_user_config()` queries SQLite on every request. **No server restart is required** after updating a user's configuration. The legacy `data/agent_configs.json` file is preserved only as a migration fallback and is no longer read once users exist in the database.
 
 ---
 
@@ -619,6 +760,57 @@ RERANKER_ENABLED=true
 All other parameters (RAG chunk sizes, recursion limits, timeouts, etc.) are configured directly in `config.py` with clear comments.
 
 ---
+## 🐳 Docker Deployment (Reproducible Setup)
+> Recommended for clean environments, testing, or sharing with others.
+> Your daily development workflow (`./iniciar_agentes.sh`) remains unchanged.
+
+### Prerequisites
+- Docker Engine & Docker Compose v2+
+- LM Studio running on the host machine (default port `1234`)
+
+### Quick Start
+```bash
+# Clone & enter project
+git clone https://github.com/alvalca/agentes-ai.git
+cd agentes-ai
+
+# Copy & configure environment
+cp .env.example .env
+# Edit .env → set SECRET_KEY, ADMIN_USER, ADMIN_PASS
+
+# Launch
+docker compose up -d
+```
+Access the UI at `http://localhost:8501` | API docs at `http://localhost:8000/docs`
+
+### 🔑 LM Studio Networking
+Docker containers cannot reach `localhost` directly. The compose file uses `host-gateway` to bridge to LM Studio at `http://host.docker.internal:1234/v1`.
+⚠️ **Required**: In LM Studio → Developer tab, enable **"Serve on Local Network"**.
+
+### 📦 Persistent Data
+| Path/Volume | Purpose |
+|-------------|---------|
+| `./data/` | Users, conversations, generated docs, agenda (bind mount) |
+| `./logs/` | Application logs |
+| `huggingface_cache` | Embedding & reranker models (avoids re-downloading on rebuild) |
+
+### 🔄 Local Development vs Docker
+| Mode | Command | Best for |
+|------|---------|----------|
+| **Local** | `./iniciar_agentes.sh` | Daily dev, native GPU access, faster iteration |
+| **Docker** | `docker compose up -d` | Clean env testing, sharing, reproducible setups |
+
+The startup script automatically stops Docker containers before launching locally to prevent port conflicts.
+
+### 🛠️ Troubleshooting
+| Issue | Solution |
+|-------|----------|
+| `Connection refused` to LM Studio | Enable "Serve on Local Network" in LM Studio |
+| `Failed to connect to host.docker.internal` | Add `extra_hosts: host-gateway` in `docker-compose.yml` (Linux) |
+| GPU not used for embeddings | Ensure `EMBED_DEVICE=cuda:1` in `.env` and Docker has NVIDIA runtime |
+
+
+---
 
 ## Project Structure
 
@@ -632,6 +824,7 @@ agentes-ai/
 │   ├── rag.py               # RAG pipeline (index, search, chunking)
 │   ├── memory.py            # Semantic memory, conversation management
 │   ├── auth.py              # JWT authentication
+│   ├── database.py          # SQLite schema, connection pool, migration utilities
 │   └── tools_programmer.py  # Secure tools for programmer agent (file I/O, bash/python exec)
 ├── frontend/
 │   └── app.py               # Streamlit UI
@@ -644,7 +837,8 @@ agentes-ai/
 │   ├── test_rag.py          # RAG unit tests: chunking, transcript detection, snippets
 │   ├── test_memory.py       # Semantic memory: add_message, cross-agent, history
 │   ├── test_tools.py        # Tool unit tests: calculator, document generation, code
-│   └── test_agenda.py       # Agenda CRUD: add, list, done, suggest, reorder
+│   ├── test_agenda.py       # Agenda CRUD: add, list, done, suggest, reorder
+│   └── test_database.py     # SQLite: schema, migrations, FK constraints, dry-run
 ├── docs/
 │   └── assets/              # GIFs, screenshots and demo videos for README
 │       ├── streaming_demo.gif
@@ -653,13 +847,18 @@ agentes-ai/
 │       ├── gendoc_demo.gif
 │       └── code_demo.gif
 ├── data/                    # Runtime data (gitignored)
+│   ├── agentes.db           # SQLite database (users, conversations, messages, configs)
 │   ├── chroma/              # Vector stores (RAG + semantic memory)
-│   ├── chat_history/        # Conversation JSON files
 │   ├── uploads/             # Uploaded documents
 │   ├── documents/           # Generated documents
 │   └── agenda/              # Per-user agenda JSON files
 ├── config.py                # Centralized configuration
 ├── pytest.ini               # Test configuration and markers
+├── Dockerfile.backend       # Docker image for FastAPI backend
+├── Dockerfile.frontend      # Docker image for Streamlit frontend
+├── docker-compose.yml       # Orchestrates backend + frontend services
+├── requirements.txt         # Backend Python dependencies
+├── requirements.frontend.txt # Frontend Python dependencies
 ├── agent_configs.example.json
 ├── modelos.conf.example
 ├── .env.example
@@ -677,19 +876,20 @@ This project includes a professional-grade test suite to ensure reliability, sec
 
 | Metric | Value |
 |--------|-------|
-| **Total tests** | 227 passing |
-| **Overall coverage** | 59% |
-| **Critical modules** | `auth.py`: 98%, `main.py`: 93% |
-| **Execution time** | ~18 seconds |
+| **Total tests** | 240 passing |
+| **Overall coverage** | 61% |
+| **Critical modules** | `auth.py`: 99%, `main.py`: 92%, `database.py`: 93% |
+| **Execution time** | ~34s (with real SQLite + RAG integration)  |
 
 ### 📈 Coverage by Module
 
 | Module | Coverage | Status | Notes |
 |--------|----------|--------|-------|
-| `auth.py` | 98% | 🔐 Critical | Password hashing, JWT tokens, role-based access |
-| `main.py` | 93% | 🌐 Critical | API endpoints, input validation, error handling |
-| `agents.py` | 67% | ✅ Core | Agent orchestration, routing, chat logic |
-| `memory.py` | 54% | 🟡 Complex | Semantic memory, validated by integration tests |
+| `auth.py` | 99% | 🔐 Critical | Password hashing, JWT, roles, security edge cases |
+| `main.py` | 92% | 🌐 Critical | API endpoints, input validation, error handling |
+| `database.py` | 93% | 🗄️ Critical | SQLite schema, migrations, context manager, FK constraints |
+| `agents.py` | 65% | ✅ Core | Agent orchestration, routing, chat logic |
+| `memory.py` | 61% | 🟡 Complex | Semantic memory, validated by integration tests |
 | `rag.py` | 51% | 🟡 Complex | RAG pipeline, validated end-to-end |
 | `tools.py` | 47% | 🟡 Diverse | Utility tools, covered by integration tests |
 
@@ -735,14 +935,12 @@ Transcripts without punctuation or paragraph structure still benefit from adapti
 
 ## Roadmap
 
-- [ ] Docker Compose deployment
+- [x] Docker Compose deployment
+- [x] Migrate chat history from JSON to SQLite
 - [ ] Admin UI for dynamic agent configuration (SQLite backend)
-- [ ] Migrate chat history from JSON to SQLite
 - [ ] React frontend with native streaming
 - [ ] vLLM backend for multi-user concurrent inference
 - [ ] Visible thinking mode (langchain-qwq integration)
-- [ ] Dynamic `agent_configs.json` reload without restart
-- [ ] Chunking improvement: preprocessing pipeline for transcripts
 
 ---
 

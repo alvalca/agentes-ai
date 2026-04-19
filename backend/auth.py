@@ -1,9 +1,8 @@
 # ============================================================================
 # backend/auth.py — Autenticación y gestión de usuarios
-# JWT tokens + almacenamiento de usuarios en JSON local
+# JWT tokens + almacenamiento en SQLite
 # ============================================================================
 
-import json
 import logging
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
@@ -19,34 +18,31 @@ import sys
 sys.path.append(str(Path(__file__).parent.parent))
 from config import (
     SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRE_MINUTES,
-    DATA_DIR, DEFAULT_ADMIN_USER, DEFAULT_ADMIN_PASS
+    DEFAULT_ADMIN_USER, DEFAULT_ADMIN_PASS
 )
+from backend.database import get_db
 
 logger = logging.getLogger(__name__)
 
-# ── Configuración de seguridad ────────────────────────────────────────────────
-oauth2_scheme  = OAuth2PasswordBearer(tokenUrl="/auth/token")
-
-# ── Archivo de usuarios (JSON local) ─────────────────────────────────────────
-USERS_FILE = DATA_DIR / "users.json"
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
 # ── Modelos Pydantic ──────────────────────────────────────────────────────────
 class User(BaseModel):
-    username:    str
-    email:       Optional[str] = None
-    full_name:   Optional[str] = None
-    disabled:    bool = False
-    is_admin:    bool = False
+    username:  str
+    email:     Optional[str] = None
+    full_name: Optional[str] = None
+    disabled:  bool = False
+    is_admin:  bool = False
 
 class UserInDB(User):
     hashed_password: str
 
 class UserCreate(BaseModel):
-    username:   str
-    password:   str
-    email:      Optional[str] = None
-    full_name:  Optional[str] = None
-    is_admin:   bool = False
+    username:  str
+    password:  str
+    email:     Optional[str] = None
+    full_name: Optional[str] = None
+    is_admin:  bool = False
 
 class Token(BaseModel):
     access_token: str
@@ -57,155 +53,128 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     username: Optional[str] = None
 
-# ── Gestión del archivo de usuarios ──────────────────────────────────────────
-def _load_users() -> dict:
-    """Carga usuarios desde el archivo JSON."""
-    if not USERS_FILE.exists():
-        return {}
-    with open(USERS_FILE, "r") as f:
-        return json.load(f)
-
-def _save_users(users: dict) -> None:
-    """Guarda usuarios en el archivo JSON."""
-    with open(USERS_FILE, "w") as f:
-        json.dump(users, f, indent=2)
-
+# ── Inicialización ────────────────────────────────────────────────────────────
 def _init_users() -> None:
-    """Crea el usuario admin por defecto si no existe ningún usuario."""
-    users = _load_users()
-    if not users:
-        logger.info("Creando usuario admin por defecto...")
-        hashed = get_password_hash(DEFAULT_ADMIN_PASS)
-        users[DEFAULT_ADMIN_USER] = {
-            "username":        DEFAULT_ADMIN_USER,
-            "email":           "admin@local",
-            "full_name":       "Administrador",
-            "disabled":        False,
-            "is_admin":        True,
-            "hashed_password": hashed,
-        }
-        _save_users(users)
-        logger.info(f"Usuario admin creado: {DEFAULT_ADMIN_USER}")
+    """Crea el usuario admin por defecto si la tabla está vacía."""
+    with get_db() as db:
+        row = db.execute("SELECT COUNT(*) as n FROM users").fetchone()
+        if row["n"] == 0:
+            logger.info("Creando usuario admin por defecto...")
+            hashed = get_password_hash(DEFAULT_ADMIN_PASS)
+            db.execute("""
+                INSERT INTO users (username, email, full_name,
+                                   disabled, is_admin, hashed_password)
+                VALUES (?, ?, ?, 0, 1, ?)
+            """, (DEFAULT_ADMIN_USER, "admin@local", "Administrador", hashed))
+            logger.info(f"Usuario admin creado: {DEFAULT_ADMIN_USER}")
 
-# Inicializar al importar el módulo
-_init_users()
-
-# ── Funciones de autenticación ────────────────────────────────────────────────
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(
-        plain_password.encode("utf-8"), 
-        hashed_password.encode("utf-8")
-    )
+# ── Contraseñas ───────────────────────────────────────────────────────────────
+def verify_password(plain: str, hashed: str) -> bool:
+    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
 
 def get_password_hash(password: str) -> str:
     return bcrypt.hashpw(
-        password.encode("utf-8"), 
-        bcrypt.gensalt()
+        password.encode("utf-8"), bcrypt.gensalt()
     ).decode("utf-8")
 
+# ── CRUD ──────────────────────────────────────────────────────────────────────
 def get_user(username: str) -> Optional[UserInDB]:
-    users = _load_users()
-    if username in users:
-        return UserInDB(**users[username])
-    return None
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM users WHERE username = ?", (username,)
+        ).fetchone()
+    return UserInDB(**dict(row)) if row else None
 
 def authenticate_user(username: str, password: str) -> Optional[UserInDB]:
     user = get_user(username)
-    if not user:
-        return None
-    if not verify_password(password, user.hashed_password):
+    if not user or not verify_password(password, user.hashed_password):
         return None
     return user
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+def create_user(user_data: UserCreate) -> User:
+    if get_user(user_data.username):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"El usuario '{user_data.username}' ya existe"
+        )
+    hashed = get_password_hash(user_data.password)
+    with get_db() as db:
+        db.execute("""
+            INSERT INTO users (username, email, full_name,
+                               disabled, is_admin, hashed_password)
+            VALUES (?, ?, ?, 0, ?, ?)
+        """, (
+            user_data.username, user_data.email, user_data.full_name,
+            int(user_data.is_admin), hashed
+        ))
+    logger.info(f"Usuario creado: {user_data.username}")
+    return get_user(user_data.username)
+
+def list_users() -> list[User]:
+    with get_db() as db:
+        rows = db.execute("SELECT * FROM users").fetchall()
+    return [User(**dict(r)) for r in rows]
+
+def delete_user(username: str) -> bool:
+    with get_db() as db:
+        cur = db.execute("DELETE FROM users WHERE username = ?", (username,))
+    if cur.rowcount:
+        logger.info(f"Usuario eliminado: {username}")
+    return cur.rowcount > 0
+
+def change_password(username: str, new_password: str) -> bool:
+    hashed = get_password_hash(new_password)
+    with get_db() as db:
+        cur = db.execute(
+            "UPDATE users SET hashed_password = ? WHERE username = ?",
+            (hashed, username)
+        )
+    if cur.rowcount:
+        logger.info(f"Contraseña cambiada: {username}")
+    return cur.rowcount > 0
+
+# ── JWT ───────────────────────────────────────────────────────────────────────
+def create_access_token(data: dict,
+                        expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
     expire = datetime.now(UTC) + (
-        expires_delta if expires_delta
-        else timedelta(minutes=JWT_EXPIRE_MINUTES)
+        expires_delta or timedelta(minutes=JWT_EXPIRE_MINUTES)
     )
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 # ── Dependencias FastAPI ──────────────────────────────────────────────────────
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserInDB:
-    credentials_exception = HTTPException(
+async def get_current_user(
+    token: str = Depends(oauth2_scheme)
+) -> UserInDB:
+    exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="No se pudo validar las credenciales",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
         payload  = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
-        username: str = payload.get("sub")
+        username = payload.get("sub")
         if username is None:
-            raise credentials_exception
-        token_data = TokenData(username=username)
+            raise exc
     except JWTError:
-        raise credentials_exception
-
-    user = get_user(token_data.username)
+        raise exc
+    user = get_user(username)
     if user is None:
-        raise credentials_exception
+        raise exc
     return user
 
 async def get_current_active_user(
     current_user: UserInDB = Depends(get_current_user)
 ) -> UserInDB:
     if current_user.disabled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Usuario desactivado"
-        )
+        raise HTTPException(status_code=400, detail="Usuario desactivado")
     return current_user
 
 async def get_admin_user(
     current_user: UserInDB = Depends(get_current_active_user)
 ) -> UserInDB:
     if not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Se requieren permisos de administrador"
-        )
+        raise HTTPException(status_code=403,
+                            detail="Se requieren permisos de administrador")
     return current_user
-
-# ── CRUD de usuarios ──────────────────────────────────────────────────────────
-def create_user(user_data: UserCreate) -> User:
-    users = _load_users()
-    if user_data.username in users:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"El usuario '{user_data.username}' ya existe"
-        )
-    hashed = get_password_hash(user_data.password)
-    users[user_data.username] = {
-        "username":        user_data.username,
-        "email":           user_data.email,
-        "full_name":       user_data.full_name,
-        "disabled":        False,
-        "is_admin":        user_data.is_admin,
-        "hashed_password": hashed,
-    }
-    _save_users(users)
-    logger.info(f"Usuario creado: {user_data.username}")
-    return User(**users[user_data.username])
-
-def list_users() -> list[User]:
-    users = _load_users()
-    return [User(**u) for u in users.values()]
-
-def delete_user(username: str) -> bool:
-    users = _load_users()
-    if username not in users:
-        return False
-    del users[username]
-    _save_users(users)
-    logger.info(f"Usuario eliminado: {username}")
-    return True
-
-def change_password(username: str, new_password: str) -> bool:
-    users = _load_users()
-    if username not in users:
-        return False
-    users[username]["hashed_password"] = get_password_hash(new_password)
-    _save_users(users)
-    logger.info(f"Contraseña cambiada para: {username}")
-    return True

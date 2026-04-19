@@ -23,7 +23,6 @@ from langchain_huggingface import HuggingFaceEmbeddings
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
-from backend.database import get_db
 from config import (
     CHAT_HISTORY_DIR,
     CHROMA_DIR,
@@ -68,81 +67,110 @@ def _get_memory_collection(user_id: str):
     )
 
 # ── Conversaciones ───────────────────────────────────────────────────────────
-def _ensure_default_conversation(user_id: str) -> str:
-    """Garantiza que existe al menos una conversación. Devuelve su ID."""
-    with get_db() as db:
-        row = db.execute(
-            "SELECT id FROM conversations WHERE user_id = ? "
-            "ORDER BY last_active DESC LIMIT 1", (user_id,)
-        ).fetchone()
-        if row:
-            return row["id"]
-        # Crear conversación inicial
-        conv_id = "default"
-        now = datetime.now().isoformat()
-        db.execute(
-            "INSERT OR IGNORE INTO conversations "
-            "(id, user_id, name, created_at, last_active) VALUES (?,?,?,?,?)",
-            (conv_id, user_id, "Conversación inicial", now, now)
-        )
-    return conv_id
+def _conversations_file(user_id: str) -> Path:
+    user_dir = CHAT_HISTORY_DIR / user_id
+    user_dir.mkdir(parents=True, exist_ok=True)
+    return user_dir / "conversations.json"
 
 def _load_conversations(user_id: str) -> list[dict]:
-    """Carga conversaciones desde SQLite (compatibilidad con código existente)."""
-    with get_db() as db:
-        rows = db.execute(
-            "SELECT id, name, created_at as created, last_active "
-            "FROM conversations WHERE user_id = ? "
-            "ORDER BY last_active DESC", (user_id,)
-        ).fetchall()
-    return [dict(r) for r in rows]
+    f = _conversations_file(user_id)
+    if not f.exists():
+        return []
+    try:
+        with open(f, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return []
 
 def _save_conversations(user_id: str, convs: list[dict]) -> None:
-    """Actualiza conversaciones en SQLite (compatibilidad con código existente)."""
-    with get_db() as db:
-        for c in convs:
-            db.execute("""
-                INSERT INTO conversations (id, user_id, name, created_at, last_active)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(id, user_id) DO UPDATE SET
-                    name        = excluded.name,
-                    last_active = excluded.last_active
-            """, (
-                c["id"], user_id,
-                c.get("name", "Conversación"),
-                c.get("created", datetime.now().isoformat()),
-                c.get("last_active", datetime.now().isoformat()),
-            ))
+    f = _conversations_file(user_id)
+    with open(f, "w", encoding="utf-8") as fh:
+        json.dump(convs, fh, indent=2, ensure_ascii=False)
+
+def _ensure_default_conversation(user_id: str) -> str:
+    """Garantiza que existe al menos una conversación. Devuelve su ID.
+    También registra conversaciones huérfanas (conv_*.json sin entrada en el índice)."""
+    convs    = _load_conversations(user_id)
+    user_dir = CHAT_HISTORY_DIR / user_id
+    now      = datetime.now().isoformat()
+
+    # Migración: si existe history.json legacy, convertirlo a conv_default.json
+    legacy = user_dir / "history.json"
+    if legacy.exists():
+        legacy.rename(user_dir / "conv_default.json")
+
+    # Registrar archivos conv_*.json que no estén en el índice
+    registered_ids = {c["id"] for c in convs}
+    changed = False
+    for conv_file in sorted(user_dir.glob("conv_*.json")):
+        conv_id = conv_file.stem[5:]  # quitar "conv_"
+        if conv_id not in registered_ids:
+            # Intentar obtener fecha del primer mensaje
+            try:
+                with open(conv_file, "r", encoding="utf-8") as f:
+                    msgs = json.load(f)
+                created = msgs[0]["timestamp"] if msgs else now
+                # Usar primeras palabras del primer mensaje usuario como nombre
+                first_user = next((m["content"] for m in msgs if m["role"] == "user"), "")
+                words = first_user.strip().split()[:6]
+                name  = " ".join(words)[:60] if words else "Conversación recuperada"
+            except Exception:
+                created = now
+                name    = "Conversación recuperada"
+            convs.append({
+                "id":          conv_id,
+                "name":        name,
+                "created":     created,
+                "last_active": created,
+            })
+            registered_ids.add(conv_id)
+            changed = True
+
+    if changed or not convs:
+        if not convs:
+            # Sin ningún archivo — crear conversación inicial vacía
+            conv_id = "default"
+            convs = [{
+                "id":          conv_id,
+                "name":        "Conversación inicial",
+                "created":     now,
+                "last_active": now,
+            }]
+        _save_conversations(user_id, convs)
+
+    return convs[-1]["id"] if convs else "default"
 
 # ── Archivo JSON de historial cronológico ────────────────────────────────────
+def _history_file(user_id: str, conversation_id: str = "default") -> Path:
+    user_dir = CHAT_HISTORY_DIR / user_id
+    user_dir.mkdir(parents=True, exist_ok=True)
+    return user_dir / f"conv_{conversation_id}.json"
 
-# ── Archivo JSON de historial cronológico ────────────────────────────────────
 def _load_history(user_id: str, conversation_id: str = "default") -> list[dict]:
-    """Carga mensajes de una conversación desde SQLite."""
-    with get_db() as db:
-        rows = db.execute(
-            "SELECT id, role, content, timestamp, agent, conversation_id "
-            "FROM messages WHERE user_id = ? AND conversation_id = ? "
-            "ORDER BY timestamp ASC",
-            (user_id, conversation_id)
-        ).fetchall()
-    return [dict(r) for r in rows]
+    f = _history_file(user_id, conversation_id)
+    if not f.exists():
+        return []
+    try:
+        with open(f, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return []
 
-def _save_history(user_id: str, history: list[dict],
-                  conversation_id: str = "default") -> None:
-    """Compatibilidad — con SQLite los mensajes se insertan en add_message."""
-    pass  # Los mensajes ya se insertan directamente en add_message
+def _save_history(user_id: str, history: list[dict], conversation_id: str = "default") -> None:
+    f = _history_file(user_id, conversation_id)
+    with open(f, "w", encoding="utf-8") as fh:
+        json.dump(history, fh, indent=2, ensure_ascii=False)
 
 def _touch_conversation(user_id: str, conversation_id: str) -> None:
-    """Actualiza last_active de la conversación en SQLite."""
-    with get_db() as db:
-        db.execute(
-            "UPDATE conversations SET last_active = ? "
-            "WHERE user_id = ? AND id = ?",
-            (datetime.now().isoformat(), user_id, conversation_id)
-        )
+    """Actualiza last_active de la conversación."""
+    convs = _load_conversations(user_id)
+    for c in convs:
+        if c["id"] == conversation_id:
+            c["last_active"] = datetime.now().isoformat()
+            break
+    _save_conversations(user_id, convs)
 
-# ── Vectorizar y guardar # ── Vectorizar y guardar en memoria semántica ─────────────────────────────────
+# ── Vectorizar y guardar en memoria semántica ─────────────────────────────────
 def _clean_content(content: str) -> str:
     """Elimina bloques <think>...</think> del contenido antes de indexar."""
     return re.sub(r"<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
@@ -215,21 +243,17 @@ def add_message(
     convs     = _load_conversations(user_id)
     conv_name = next((c["name"] for c in convs if c["id"] == conversation_id), conversation_id)
 
-    # 1. Historial cronológico → SQLite
-    with get_db() as db:
-        # Asegurar que la conversación existe antes de insertar el mensaje
-        db.execute(
-            "INSERT OR IGNORE INTO conversations "
-            "(id, user_id, name, created_at, last_active) VALUES (?,?,?,?,?)",
-            (conversation_id, user_id, "Nueva conversación",
-             timestamp, timestamp)
-        )
-        db.execute(
-            "INSERT INTO messages "
-            "(user_id, conversation_id, role, content, agent, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, conversation_id, role, content, agent, timestamp)
-        )
+    # 1. Historial cronológico
+    history = _load_history(user_id, conversation_id)
+    history.append({
+        "id":              msg_id,
+        "role":            role,
+        "content":         content,
+        "timestamp":       timestamp,
+        "agent":           agent,
+        "conversation_id": conversation_id,
+    })
+    _save_history(user_id, history, conversation_id)
     _touch_conversation(user_id, conversation_id)
 
     # 2. Memoria semántica (async-like: si falla no bloquea)
@@ -241,14 +265,8 @@ def get_history(
     conversation_id: str = "default",
 ) -> list[dict]:
     """Devuelve los últimos N mensajes del historial cronológico."""
-    with get_db() as db:
-        rows = db.execute(
-            "SELECT id, role, content, timestamp, agent, conversation_id "
-            "FROM messages WHERE user_id = ? AND conversation_id = ? "
-            "ORDER BY timestamp DESC LIMIT ?",
-            (user_id, conversation_id, last_n)
-        ).fetchall()
-    return list(reversed([dict(r) for r in rows]))
+    history = _load_history(user_id, conversation_id)
+    return history[-last_n:] if len(history) > last_n else history
 
 def get_history_by_days(
     user_id:         str,
@@ -256,18 +274,37 @@ def get_history_by_days(
     max_msgs:        int = 60,
     conversation_id: str = "default",
 ) -> list[dict]:
-    """Devuelve los mensajes de los últimos N días con límite máximo."""
-    from datetime import timedelta
-    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    with get_db() as db:
-        rows = db.execute(
-            "SELECT id, role, content, timestamp, agent, conversation_id "
-            "FROM messages "
-            "WHERE user_id = ? AND conversation_id = ? AND timestamp >= ? "
-            "ORDER BY timestamp DESC LIMIT ?",
-            (user_id, conversation_id, cutoff, max_msgs)
-        ).fetchall()
-    return list(reversed([dict(r) for r in rows]))
+    """
+    Devuelve los mensajes de los últimos N días, con un límite máximo
+    de mensajes para no sobrecargar la pantalla.
+
+    Args:
+        user_id:  ID del usuario
+        days:     Número de días hacia atrás (1 = últimas 24h, 3 = últimos 3 días)
+        max_msgs: Límite máximo de mensajes a devolver
+
+    Returns:
+        Lista de mensajes ordenados cronológicamente (más antiguo primero)
+    """
+    from datetime import timezone, timedelta
+    history  = _load_history(user_id, conversation_id)
+    if not history:
+        return []
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff_str = cutoff.isoformat()
+
+    # Filtrar por fecha
+    recent = [
+        m for m in history
+        if m.get("timestamp", "") >= cutoff_str
+    ]
+
+    # Si hay más mensajes que el límite, quedarse con los más recientes
+    if len(recent) > max_msgs:
+        recent = recent[-max_msgs:]
+
+    return recent
 
 def get_langchain_messages(
     user_id:         str,
@@ -447,57 +484,51 @@ def build_semantic_context(
 
 
 def create_conversation(user_id: str, name: str = "") -> dict:
-    """Crea una nueva conversación en SQLite."""
+    """Crea una nueva conversación y la añade al índice."""
     conv_id = str(uuid.uuid4())[:8]
     now     = datetime.now().isoformat()
-    with get_db() as db:
-        db.execute(
-            "INSERT INTO conversations (id, user_id, name, created_at, last_active) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (conv_id, user_id, name or "Nueva conversación", now, now)
-        )
+    conv    = {
+        "id":          conv_id,
+        "name":        name or "Nueva conversación",
+        "created":     now,
+        "last_active": now,
+    }
+    convs = _load_conversations(user_id)
+    convs.append(conv)
+    _save_conversations(user_id, convs)
     logger.info(f"Conversación creada: {conv_id} para {user_id}")
-    return {"id": conv_id, "name": name or "Nueva conversación",
-            "created": now, "last_active": now}
+    return conv
 
 def list_conversations(user_id: str) -> list[dict]:
     """Lista todas las conversaciones del usuario ordenadas por last_active."""
     _ensure_default_conversation(user_id)
-    with get_db() as db:
-        rows = db.execute(
-            "SELECT id, name, created_at as created, last_active "
-            "FROM conversations WHERE user_id = ? "
-            "ORDER BY last_active DESC", (user_id,)
-        ).fetchall()
-    return [dict(r) for r in rows]
+    convs = _load_conversations(user_id)
+    return sorted(convs, key=lambda c: c.get("last_active", ""), reverse=True)
 
 def rename_conversation(user_id: str, conversation_id: str, new_name: str) -> bool:
-    """Renombra una conversación en SQLite."""
-    with get_db() as db:
-        cur = db.execute(
-            "UPDATE conversations SET name = ? "
-            "WHERE user_id = ? AND id = ?",
-            (new_name.strip()[:80], user_id, conversation_id)
-        )
-    return cur.rowcount > 0
+    """Renombra una conversación."""
+    convs = _load_conversations(user_id)
+    for c in convs:
+        if c["id"] == conversation_id:
+            c["name"] = new_name.strip()[:80]  # máximo 80 chars
+            _save_conversations(user_id, convs)
+            return True
+    return False
 
 def auto_name_conversation(user_id: str, conversation_id: str, first_message: str) -> None:
-    """Auto-nombra la conversación si tiene nombre genérico."""
-    auto_names = ("Nueva conversación", "Conversación inicial")
-    with get_db() as db:
-        row = db.execute(
-            "SELECT name FROM conversations WHERE user_id = ? AND id = ?",
-            (user_id, conversation_id)
-        ).fetchone()
-        if row and row["name"] in auto_names:
+    """Auto-nombra la conversación con las primeras palabras del primer mensaje."""
+    convs = _load_conversations(user_id)
+    auto_names = {"Nueva conversación", "Conversación inicial"}
+    for c in convs:
+        if c["id"] == conversation_id and c["name"] in auto_names:
+            # Tomar primeras 6 palabras del mensaje
             words = first_message.strip().split()[:6]
             name  = " ".join(words)
             if len(name) > 60:
                 name = name[:60] + "..."
-            db.execute(
-                "UPDATE conversations SET name = ? WHERE user_id = ? AND id = ?",
-                (name, user_id, conversation_id)
-            )
+            c["name"] = name
+            _save_conversations(user_id, convs)
+            break
 
 def get_active_conversation(user_id: str) -> str:
     """Devuelve el ID de la conversación más reciente por last_active.
@@ -509,59 +540,66 @@ def get_active_conversation(user_id: str) -> str:
     return create_conversation(user_id, "Conversación inicial")["id"]
 
 def clear_history(user_id: str, conversation_id: str = None) -> bool:
-    """Borra historial en SQLite + memoria semántica en Chroma."""
+    """Borra historial cronológico Y memoria semántica.
+    Si conversation_id es None, borra todo el usuario.
+    Si se especifica, borra solo esa conversación."""
     try:
-        with get_db() as db:
-            if conversation_id:
-                db.execute(
-                    "DELETE FROM messages "
-                    "WHERE user_id = ? AND conversation_id = ?",
-                    (user_id, conversation_id)
-                )
-                db.execute(
-                    "DELETE FROM conversations WHERE user_id = ? AND id = ?",
-                    (user_id, conversation_id)
-                )
-                logger.info(f"Conversación {conversation_id} borrada para {user_id}")
-            else:
-                db.execute("DELETE FROM messages WHERE user_id = ?", (user_id,))
-                db.execute("DELETE FROM conversations WHERE user_id = ?", (user_id,))
-                # Chroma
-                try:
-                    client   = _get_memory_client()
-                    col_name = f"memory_{user_id.replace(' ', '_').lower()}"
-                    client.delete_collection(col_name)
-                except Exception:
-                    pass
-                logger.info(f"Historial y memoria borrados para {user_id}")
+        if conversation_id:
+            # Borrar solo esa conversación
+            f = _history_file(user_id, conversation_id)
+            if f.exists():
+                f.unlink()
+            convs = _load_conversations(user_id)
+            convs = [c for c in convs if c["id"] != conversation_id]
+            _save_conversations(user_id, convs)
+            logger.info(f"Conversación {conversation_id} borrada para {user_id}")
+            return True
+        # JSON (borrar todos los archivos conv_*.json)
+        user_dir = CHAT_HISTORY_DIR / user_id
+        for f in user_dir.glob("conv_*.json"):
+            f.unlink()
+        conversations_f = _conversations_file(user_id)
+        if conversations_f.exists():
+            conversations_f.unlink()
+
+        # Chroma
+        try:
+            client   = _get_memory_client()
+            col_name = f"memory_{user_id.replace(' ', '_').lower()}"
+            client.delete_collection(col_name)
+        except Exception:
+            pass
+
+        logger.info(f"Historial y memoria semántica borrados para {user_id}")
         return True
     except Exception as e:
         logger.error(f"Error borrando historial de {user_id}: {e}")
         return False
 
 def get_all_messages(user_id: str) -> list[dict]:
-    """Devuelve todos los mensajes del usuario ordenados por timestamp."""
-    with get_db() as db:
-        rows = db.execute(
-            "SELECT id, role, content, timestamp, agent, conversation_id "
-            "FROM messages WHERE user_id = ? ORDER BY timestamp ASC",
-            (user_id,)
-        ).fetchall()
-    return [dict(r) for r in rows]
+    """Devuelve todos los mensajes del usuario de todas las conversaciones."""
+    user_dir = CHAT_HISTORY_DIR / user_id
+    all_msgs = []
+    if not user_dir.exists():
+        return []
+    for conv_file in sorted(user_dir.glob("conv_*.json")):
+        try:
+            with open(conv_file, "r", encoding="utf-8") as f:
+                msgs = json.load(f)
+            all_msgs.extend(msgs)
+        except Exception:
+            pass
+    # Ordenar por timestamp
+    all_msgs.sort(key=lambda m: m.get("timestamp", ""))
+    return all_msgs
 
 def get_history_stats(user_id: str) -> dict:
-    """Estadísticas del historial y memoria semántica."""
-    with get_db() as db:
-        row = db.execute("""
-            SELECT
-                COUNT(*) as total,
-                SUM(CASE WHEN role='user' THEN 1 ELSE 0 END) as user_msgs,
-                SUM(CASE WHEN role='assistant' THEN 1 ELSE 0 END) as ai_msgs,
-                MIN(timestamp) as first_msg,
-                MAX(timestamp) as last_msg
-            FROM messages WHERE user_id = ?
-        """, (user_id,)).fetchone()
+    """Estadísticas del historial y memoria semántica (todas las conversaciones)."""
+    history   = get_all_messages(user_id)
+    user_msgs = [m for m in history if m["role"] == "user"]
+    ai_msgs   = [m for m in history if m["role"] == "assistant"]
 
+    # Contar vectores en Chroma
     semantic_count = 0
     try:
         col = _get_memory_collection(user_id)
@@ -570,10 +608,10 @@ def get_history_stats(user_id: str) -> dict:
         pass
 
     return {
-        "total_messages":     row["total"] or 0,
-        "user_messages":      row["user_msgs"] or 0,
-        "assistant_messages": row["ai_msgs"] or 0,
+        "total_messages":     len(history),
+        "user_messages":      len(user_msgs),
+        "assistant_messages": len(ai_msgs),
         "semantic_memories":  semantic_count,
-        "first_message":      row["first_msg"],
-        "last_message":       row["last_msg"],
+        "first_message":      history[0]["timestamp"]  if history else None,
+        "last_message":       history[-1]["timestamp"] if history else None,
     }

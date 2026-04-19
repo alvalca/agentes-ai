@@ -7,6 +7,21 @@ import pytest
 from unittest.mock import patch, MagicMock, call
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
+def _seed_test_user(user_id: str, conv_id: str = "default"):
+    """Crea usuario y conversación en SQLite para evitar FK errors."""
+    from backend.database import get_db
+    with get_db() as db:
+        db.execute(
+            "INSERT OR IGNORE INTO users (username, email, full_name, disabled, is_admin, hashed_password) "
+            "VALUES (?, ?, ?, 0, 0, ?)",
+            (user_id, f"{user_id}@test.com", "Test User", "$2b$12$fakehash")
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO conversations (id, user_id, name, created_at, last_active) "
+            "VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+            (conv_id, user_id, "Conversación test")
+        )
+
 # ── Fixtures reutilizables ──────────────────────────────────────────────────
 
 @pytest.fixture
@@ -394,7 +409,9 @@ class TestChatFunction:
     """Tests para la función chat() — versión síncrona."""
 
     @pytest.mark.asyncio
-    async def test_chat_returns_structured_response(self, mock_get_llm, mock_create_agent):
+    async def test_chat_returns_structured_response(self, mock_get_llm, mock_create_agent, setup_sqlite_db):
+        from backend.agents import chat
+        _seed_test_user("test_user", "test_conv")
         """chat() debe devolver un dict con los campos esperados."""
         from backend.agents import chat
         
@@ -423,7 +440,9 @@ class TestChatFunction:
         assert "Respuesta de prueba" in result["response"]
 
     @pytest.mark.asyncio
-    async def test_chat_handles_agent_routing_when_none_specified(self, mock_get_llm, mock_create_agent):
+    async def test_chat_handles_agent_routing_when_none_specified(self, mock_get_llm, mock_create_agent, setup_sqlite_db):
+        from backend.agents import chat
+        _seed_test_user("user_xyz", "conv1")
         """Si agent_type=None, debe usar configuración del usuario o fallback a 'general'."""
         from backend.agents import chat
         from unittest.mock import patch
@@ -451,7 +470,9 @@ class TestChatFunction:
             assert result["agent_used"] == "programador"
 
     @pytest.mark.asyncio
-    async def test_chat_handles_llm_connection_error(self, mock_get_llm, mock_create_agent):
+    async def test_chat_handles_llm_connection_error(self, mock_get_llm, mock_create_agent, setup_sqlite_db):
+        from backend.agents import chat
+        _seed_test_user("test", "test")
         """Si el LLM falla por conexión, debe resetear pool y devolver error amigable."""
         from backend.agents import chat
         

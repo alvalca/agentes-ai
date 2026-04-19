@@ -66,7 +66,6 @@ AGENT_REGISTRY = {
 # El repo incluye agent_configs.example.json como plantilla.
 
 import json as _json
-from backend.database import get_db as _get_db
 from pathlib import Path as _Path
 
 _AGENT_CONFIGS_FILE = _Path(__file__).parent.parent / "data" / "agent_configs.json"
@@ -80,70 +79,18 @@ _DEFAULT_CONFIG = {
 }
 
 def _load_agent_configs() -> dict:
-    """Carga configuraciones desde SQLite con fallback a JSON legacy."""
+    """Carga agent_configs.json — si no existe devuelve solo __default__."""
+    if not _AGENT_CONFIGS_FILE.exists():
+        return {"__default__": _DEFAULT_CONFIG}
     try:
-        with _get_db() as db:
-            rows = db.execute(
-                "SELECT user_id, mode, agents_json, default_agent, "
-                "history_days, history_max_msg FROM agent_configs"
-            ).fetchall()
-        if rows:
-            result = {"__default__": _DEFAULT_CONFIG}
-            for r in rows:
-                result[r["user_id"]] = {
-                    "mode":           r["mode"],
-                    "agents":         _json.loads(r["agents_json"]),
-                    "default_agent":  r["default_agent"],
-                    "history_days":   r["history_days"],
-                    "history_max_msg":r["history_max_msg"],
-                }
-            return result
+        with open(_AGENT_CONFIGS_FILE, "r", encoding="utf-8") as f:
+            return _json.load(f)
     except Exception:
-        pass
-    # Fallback a JSON si SQLite no tiene datos aún
-    if _AGENT_CONFIGS_FILE.exists():
-        try:
-            with open(_AGENT_CONFIGS_FILE, "r", encoding="utf-8") as f:
-                return _json.load(f)
-        except Exception:
-            pass
-    return {"__default__": _DEFAULT_CONFIG}
-
-def save_user_config(username: str, config: dict) -> bool:
-    """Guarda o actualiza la configuración de un usuario en SQLite."""
-    agents = config.get("agents", ["general"])
-    # Normalizar: puede ser lista de strings o lista de dicts
-    if agents and isinstance(agents[0], dict):
-        agents = [a["id"] for a in agents]
-    try:
-        with _get_db() as db:
-            db.execute("""
-                INSERT INTO agent_configs
-                (user_id, mode, agents_json, default_agent,
-                 history_days, history_max_msg)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    mode             = excluded.mode,
-                    agents_json      = excluded.agents_json,
-                    default_agent    = excluded.default_agent,
-                    history_days     = excluded.history_days,
-                    history_max_msg  = excluded.history_max_msg,
-                    updated_at       = datetime('now')
-            """, (
-                username,
-                config.get("mode", "manual_select"),
-                _json.dumps(agents),
-                config.get("default_agent", "general"),
-                config.get("history_days", 1),
-                config.get("history_max_msg", 10),
-            ))
-        return True
-    except Exception as e:
-        return False
+        return {"__default__": _DEFAULT_CONFIG}
 
 def get_user_config(username: str) -> dict:
     """Devuelve la configuración de agentes para un usuario.
-    Lee de SQLite con fallback a agent_configs.json y luego a __default__."""
+    Lee de data/agent_configs.json con fallback a __default__."""
     configs = _load_agent_configs()
     return configs.get(username, configs.get("__default__", _DEFAULT_CONFIG))
 
@@ -194,10 +141,7 @@ Tool guide:
   immediately. NEVER invent or hallucinate URLs or article links.
   Only use URLs that are explicitly returned by the tools.
 - fetch_url: read a full article when snippets are insufficient.
-- search_user_documents: ALWAYS call this tool when the user asks about
-  content from their documents, mentions a specific file, or asks questions
-  that could be answered by their uploaded files. NEVER answer from memory
-  if the user has documents — always search first.
+- search_user_documents: questions about the user's uploaded files.
 - calculator: mathematical calculations.
 - code_interpreter: execute Python code for analysis and computations.
   Supports numpy (np), scipy, sympy (sp), pandas (pd).
@@ -206,7 +150,7 @@ Tool guide:
 
   CRITICAL: ALWAYS call this tool to run code — NEVER simulate or predict
   results without executing. If asked to run code, call the tool.
-
+  
 - agenda: personal task manager and priority tracker.
   CRITICAL: ALWAYS call this tool for ANY task/reminder operation.
   NEVER confirm adding, completing or updating a task without calling the tool first.

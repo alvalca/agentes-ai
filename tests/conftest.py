@@ -127,6 +127,43 @@ def sample_tasks():
         },
     ]
 
+# ── 🔥 FIX CRÍTICO: BD SQLite temporal por test ──────────────────────────────
+@pytest.fixture(scope="function")
+def setup_sqlite_db(tmp_path, monkeypatch):
+    """Crea una BD SQLite aislada, ejecuta init_db() y asegura usuarios de prueba."""
+    db_path = tmp_path / "test_agentes.db"
+    
+    # Parchear ruta de DB antes de cualquier import
+    import backend.database as db_mod
+    monkeypatch.setattr(db_mod, "DB_PATH", db_path)
+    
+    # Inicializar esquema
+    from backend.database import init_db
+    init_db()
+    
+    # Insertar usuarios necesarios para FOREIGN KEY constraints
+    from backend.database import get_db
+    from backend.auth import get_password_hash
+    
+    with get_db() as db:
+        db.execute("""
+            INSERT OR IGNORE INTO users (username, email, full_name, disabled, is_admin, hashed_password)
+            VALUES (?, ?, ?, 0, 0, ?)
+        """, ("testuser", "test@example.com", "Test User", get_password_hash("secret123")))
+        
+        db.execute("""
+            INSERT OR IGNORE INTO users (username, email, full_name, disabled, is_admin, hashed_password)
+            VALUES (?, ?, ?, 0, 0, ?)
+        """, ("user1", "user1@example.com", "User One", get_password_hash("pass123")))
+        
+        db.execute("""
+            INSERT OR IGNORE INTO users (username, email, full_name, disabled, is_admin, hashed_password)
+            VALUES (?, ?, ?, 0, 1, ?)
+        """, ("admin", "admin@example.com", "Admin", get_password_hash("admin123")))
+        
+    yield db_path
+    # Limpieza automática al salir del fixture (tmp_path se borra solo)
+
 
 # ── NUEVAS FIXTURES PARA TESTS DE AUTH Y MAIN ───────────────────────────────
 # Añadidas para soportar test_auth.py y test_main.py (cobertura de seguridad)
@@ -169,26 +206,9 @@ def mock_env_vars(monkeypatch, tmp_path):
 
 
 @pytest.fixture
-def temp_users_file(monkeypatch, tmp_path):
-    """Crea un archivo de usuarios JSON temporal para tests de auth.
-
-    Aísla los tests de autenticación para no modificar users.json real.
-    Retorna el Path al archivo temporal.
-    """
-    users_file = tmp_path / "users.json"
-    users_file.write_text("{}")  # Inicializar vacío
-
-    # Parchear la ruta en auth.py si está disponible
-    try:
-        import backend.auth as auth_module
-        original_users_file = auth_module.USERS_FILE
-        monkeypatch.setattr(auth_module, "USERS_FILE", users_file)
-        # También parchear en el momento de importación de otros módulos
-        monkeypatch.setattr("backend.auth.USERS_FILE", users_file)
-    except ImportError:
-        pass  # auth.py no disponible en este entorno, el test lo manejará
-
-    return users_file
+def temp_users_file(tmp_path):
+    """Placeholder para tests legacy. La auth ahora usa SQLite vía setup_sqlite_db."""
+    return tmp_path / "users.json"  # Ya no se usa, pero evita que pytest falle en setup
 
 
 @pytest.fixture

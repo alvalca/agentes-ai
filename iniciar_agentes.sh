@@ -168,6 +168,15 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM
 
+# ── 1.5. Toggle: Detener Docker si está corriendo (evita conflictos de puertos)
+if [ -f "$PROJECT_DIR/docker-compose.yml" ]; then
+    if (cd "$PROJECT_DIR" && docker compose ps -q agentes_backend agentes_frontend 2>/dev/null | grep -q .); then
+        warn "⚠️  Docker está activo para este proyecto. Deteniendo contenedores..."
+        (cd "$PROJECT_DIR" && docker compose down >/dev/null 2>&1)
+        echo -e "✅ ${GREEN}Contenedores detenidos. Puerto liberado.${NC}"
+    fi
+fi
+
 # ── VERIFICAR INSTALACIONES ───────────────────────────────────────────────────
 if [ ! -f "$LMS" ] || [ ! -f "$LM_STUDIO_APP" ]; then
     err "No se encontró lms o LM Studio"

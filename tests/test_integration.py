@@ -214,7 +214,6 @@ class TestSemanticMemory:
         history_dir = tmp_data_dir / "history"
         history_dir.mkdir()
         
-        # Resetear el singleton del cliente ChromaDB
         import backend.rag as rag_module
         rag_module._chroma_client = None
     
@@ -222,38 +221,57 @@ class TestSemanticMemory:
              patch("backend.memory.CHROMA_DIR", chroma_dir):
             yield tmp_data_dir
 
-    def test_add_message_persists(self, memory_env, tmp_data_dir):
-        """add_message guarda el mensaje en el archivo correcto."""
+    def test_add_message_persists(self, memory_env, setup_sqlite_db):
+        """add_message guarda el mensaje en SQLite."""
         from backend.memory import add_message
+        from backend.database import get_db
 
-        history_file = tmp_data_dir / "history" / "user1" / "conv_default.json"
-        history_file.parent.mkdir(parents=True, exist_ok=True)
-        history_file.write_text("[]", encoding="utf-8")
+        with get_db() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO conversations (id, user_id, name, created_at, last_active) "
+                "VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+                ("default", "user1", "Conversación")
+            )
 
-        add_message("user1", "user", "¿Qué es Python?",
-                    agent="general", conversation_id="default")
+        with patch("backend.memory.get_embeddings", return_value=MagicMock()), \
+             patch("backend.memory._get_memory_collection", return_value=MagicMock()):
+            add_message("user1", "user", "¿Qué es Python?",
+                        agent="general", conversation_id="default")
 
-        messages = json.loads(history_file.read_text())
-        assert len(messages) == 1
-        assert messages[0]["content"] == "¿Qué es Python?"
-        assert messages[0]["role"] == "user"
-        assert messages[0]["agent"] == "general"
+        with get_db() as db:
+            rows = db.execute(
+                "SELECT role, content, agent FROM messages "
+                "WHERE user_id = ? AND conversation_id = ?",
+                ("user1", "default")
+            ).fetchall()
+            assert len(rows) == 1
+            assert rows[0]["content"] == "¿Qué es Python?"
+            assert rows[0]["role"] == "user"
+            assert rows[0]["agent"] == "general"
 
-    def test_get_langchain_messages_correct_types(self, memory_env, tmp_data_dir):
+    def test_get_langchain_messages_correct_types(self, memory_env, setup_sqlite_db):
         """get_langchain_messages devuelve HumanMessage y AIMessage."""
         from backend.memory import get_langchain_messages
         from langchain_core.messages import HumanMessage, AIMessage
+        from backend.database import get_db
 
-        history_file = tmp_data_dir / "history" / "user1" / "conv_default.json"
-        history_file.parent.mkdir(parents=True, exist_ok=True)
-        history_file.write_text(json.dumps([
-            {"role": "user", "content": "Hola",
-             "agent": "general", "timestamp": "2026-04-10T10:00:00",
-             "conversation_id": "default"},
-            {"role": "assistant", "content": "¡Hola! ¿En qué puedo ayudarte?",
-             "agent": "general", "timestamp": "2026-04-10T10:00:01",
-             "conversation_id": "default"},
-        ]), encoding="utf-8")
+        with get_db() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO conversations (id, user_id, name, created_at, last_active) "
+                "VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+                ("default", "user1", "Conversación")
+            )
+            db.execute(
+                "INSERT INTO messages (user_id, conversation_id, role, content, agent, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("user1", "default", "user", "Hola", "general", "2026-04-10T10:00:00")
+            )
+            db.execute(
+                "INSERT INTO messages (user_id, conversation_id, role, content, agent, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("user1", "default", "assistant", "¡Hola! ¿En qué puedo ayudarte?",
+                 "general", "2026-04-10T10:00:01")
+            )
 
         messages = get_langchain_messages("user1", last_n=10,
                                           conversation_id="default")
@@ -502,16 +520,21 @@ class TestStreamChat:
         mock.astream = mock_astream
         return mock
 
-    def test_stream_simple_chat_yields_tokens(self, tmp_data_dir, mock_llm):
+    def test_stream_simple_chat_yields_tokens(self, tmp_data_dir, mock_llm, setup_sqlite_db):
         """stream_simple_chat debe generar tokens del LLM."""
         import asyncio
+        from backend.database import get_db
+        
+        with get_db() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO conversations (id, user_id, name, created_at, last_active) "
+                "VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+                ("default", "user1", "Conversación")
+            )
 
-        history_file = tmp_data_dir / "user1" / "conv_default.json"
-        history_file.parent.mkdir(parents=True, exist_ok=True)
-        history_file.write_text("[]", encoding="utf-8")
-
-        with patch("backend.memory.CHAT_HISTORY_DIR", tmp_data_dir), \
-             patch("backend.agents.get_llm", return_value=mock_llm):
+        with patch("backend.agents.get_llm", return_value=mock_llm), \
+             patch("backend.memory.get_embeddings", return_value=MagicMock()), \
+             patch("backend.memory._get_memory_collection", return_value=MagicMock()):
 
             from backend.agents import stream_simple_chat
 
@@ -530,7 +553,16 @@ class TestStreamChat:
         assert len(tokens) > 0
         assert "".join(tokens) in ["Hola mundo.", "Hola mundo. "]
 
-    def test_auto_name_called_in_stream_chat(self, tmp_data_dir):
+    def test_auto_name_called_in_stream_chat(self, tmp_data_dir, setup_sqlite_db):
+        """stream_chat debe llamar auto_name_conversation."""
+        from backend.database import get_db
+        
+        with get_db() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO conversations (id, user_id, name, created_at, last_active) "
+                "VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+                ("test_conv", "user1", "Nueva conversación")
+            )
         """stream_chat debe llamar auto_name_conversation."""
         with patch("backend.agents.auto_name_conversation") as mock_name, \
              patch("backend.agents.get_user_config",
