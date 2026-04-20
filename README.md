@@ -760,7 +760,7 @@ RERANKER_ENABLED=true
 All other parameters (RAG chunk sizes, recursion limits, timeouts, etc.) are configured directly in `config.py` with clear comments.
 
 ---
-## 🐳 Docker Deployment (Reproducible Setup)
+## Docker Deployment (Reproducible Setup)
 > Recommended for clean environments, testing, or sharing with others.
 > Your daily development workflow (`./iniciar_agentes.sh`) remains unchanged.
 
