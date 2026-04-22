@@ -51,3 +51,7 @@ models/
 .DS_Store
 Thumbs.db
 
+
+# ── SQLite ──────────────────────────────────────────────────────────────────
+data/agentes.db
+*.db
