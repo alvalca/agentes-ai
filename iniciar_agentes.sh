@@ -249,7 +249,15 @@ nvidia-smi --query-gpu=index,name,memory.used,memory.total \
 # ── ACTIVAR ENTORNO MAMBA ────────────────────────────────────────────────────
 log "Activando entorno mamba '$ENV_NAME'..."
 export MAMBA_ROOT_PREFIX="$MAMBA_DIR"
-source "$MAMBA_DIR/etc/profile.d/mamba.sh"
+export MAMBA_EXE="$MAMBA_DIR/bin/mamba"
+eval "$("$MAMBA_EXE" shell hook --shell bash 2>/dev/null)" || {
+    # Fallback para versiones antiguas
+    if [ -f "$MAMBA_DIR/etc/profile.d/mamba.sh" ]; then
+        source "$MAMBA_DIR/etc/profile.d/mamba.sh"
+    fi
+}
+
+
 mamba activate "$ENV_NAME"
 
 if [ $? -ne 0 ]; then

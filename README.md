@@ -608,7 +608,7 @@ pip install langchain-text-splitters langgraph langsmith
 
 # Group 5: LlamaIndex (pip)
 pip install llama-index-core llama-index-readers-file
-pip install llama-index-retrievers-bm25 llama-index-node-parser-sentence
+pip install llama-index-retrievers-bm25
 pip install llama-index-embeddings-huggingface
 
 # Group 6: Databases, vector stores and document parsing (mixed)
@@ -616,16 +616,18 @@ mamba install sqlalchemy pypdf python-docx beautifulsoup4 lxml -c conda-forge
 pip install chromadb pdfplumber ebooklib
 
 # Group 7: FastAPI backend and auth
-pip install fastapi uvicorn python-jose[cryptography] passlib[bcrypt]
+pip install fastapi uvicorn python-jose[cryptography]
+pip install bcrypt
+pip install passlib
 pip install python-dotenv python-multipart aiofiles
 
 # Group 8: Frontend and search
 pip install streamlit ddgs requests
 
 # Group 9: Document generation engines
-mamba install -c conda-forge pandoc          # markdown → LaTeX → PDF
-pip install tectonic                          # lightweight LaTeX engine (auto-downloads packages)
-pip install reportlab weasyprint              # PDF fallback and HTML→PDF
+mamba install pandoc -c conda-forge           # markdown → LaTeX → PDF
+mamba install tectonic -c conda-forge         # lightweight LaTeX engine (auto-downloads packages)
+pip install reportlab                         # PDF fallback and HTML→PDF
 pip install latex2mathml                      # optional: math preview
 
 # Group 10: Symbolic math and code interpreter extras
