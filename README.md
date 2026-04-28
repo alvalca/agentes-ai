@@ -547,7 +547,7 @@ The system works on CPU but inference will be slow (~5-10 tokens/second for 7B m
 # Start the local server on port 1234
 ```
 
-> **Note:** `pandoc` and `tectonic` are installed inside the mamba environment (see step 3), not system-wide.
+> **Note:** `pandoc` and `tectonic` are installed inside the mamba environment (see step 4), not system-wide.
 
 ### 2. Getting started with LM Studio
 

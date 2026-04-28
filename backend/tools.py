@@ -597,11 +597,12 @@ def generate_document(
                             "-V", "geometry:margin=1.5cm",
                             "-V", "linestretch=1.2",
                             "-V", f"fontsize={font_size}pt",
-                            "-V", "tables=true",                            
-                            "-V", "mainfont=Inter",
-                            "-V", r"header-includes=\usepackage{amsmath,amssymb,array,longtable,xcolor,colortbl,booktabs,enumitem}",
-                            "-V", r"header-includes=\renewcommand{\arraystretch}{1.3}",
-                            "-V", r"header-includes=\setlist{itemsep=1.2em, parsep=0.4em, topsep=0.3em}",
+                            "-V", "tables=true",                                                               
+                            "-V", r"""header-includes=\usepackage[sfdefault]{inter}
+                            \usepackage{amsmath,amssymb,array,longtable,xcolor,colortbl,booktabs,enumitem}
+                            \renewcommand{\arraystretch}{1.3}
+                            \setlist{itemsep=1.2em, parsep=0.4em, topsep=0.3em}
+                            """,
                         ],
                         capture_output=True, text=True, timeout=60
                     )

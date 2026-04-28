@@ -123,13 +123,12 @@ else
 fi
 # ── CONFIGURACIÓN INTELIGENTE DE GPU ─────────────────────────────────────────
 MOE_PATTERNS=(
-    "qwen3.5-35b-a3b"
-    "qwen3.5-32b-a3b"
-    "qwen3.5-30b-a3b"
+    "qwen3.6-35b-a3b"
+    "qwen3.5-35b-a3b"    
     "qwen3-30b-a3b"
     "mixtral"
     "deepseek-moe"
-    "qwen2-moe"
+    "moe"
 )
 
 is_moe_model() {
